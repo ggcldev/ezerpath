@@ -252,7 +252,9 @@ export default function JobsView(props: JobsViewProps) {
             onClick={() => setSelectedKeyword(null)}
           >
             <span class="text-[12px] font-medium truncate">All</span>
-            <span class="text-[11px] text-mk-tertiary ml-1 shrink-0">{(props.jobs() || []).length}</span>
+            <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
+              {(props.jobs() || []).length}
+            </span>
           </button>
 
           <For each={keywordList()}>
@@ -266,7 +268,9 @@ export default function JobsView(props: JobsViewProps) {
                 onClick={() => setSelectedKeyword(item.keyword)}
               >
                 <span class="text-[12px] truncate">{item.keyword}</span>
-                <span class="text-[11px] text-mk-tertiary ml-1 shrink-0">{item.count}</span>
+                <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
+                  {item.count}
+                </span>
               </button>
             )}
           </For>
@@ -284,7 +288,9 @@ export default function JobsView(props: JobsViewProps) {
               onClick={() => setSelectedPayRange("all")}
             >
               <span class="text-[12px] font-medium truncate">All rates</span>
-              <span class="text-[11px] text-mk-tertiary ml-1 shrink-0">{(props.jobs() || []).length}</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
+                {(props.jobs() || []).length}
+              </span>
             </button>
 
             <For each={payRangeList()}>
@@ -298,7 +304,9 @@ export default function JobsView(props: JobsViewProps) {
                   onClick={() => setSelectedPayRange(item.key)}
                 >
                   <span class="text-[12px] truncate">{item.label}</span>
-                  <span class="text-[11px] text-mk-tertiary ml-1 shrink-0">{item.count}</span>
+                  <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
+                    {item.count}
+                  </span>
                 </button>
               )}
             </For>
