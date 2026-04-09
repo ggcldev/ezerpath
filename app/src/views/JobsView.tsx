@@ -1,5 +1,6 @@
 import { createSignal, For, Show, Resource, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import type { ScanRun } from "../components/Sidebar";
 
 interface Job {
   id: number;
@@ -15,15 +16,18 @@ interface Job {
   scraped_at: string;
   is_new: boolean;
   watchlisted: boolean;
+  run_id: number | null;
 }
 
 interface JobsViewProps {
   jobs: Resource<Job[]>;
+  runs: Resource<ScanRun[]>;
   crawling: boolean;
   onToggleWatchlist: (jobId: number) => void;
 }
 
 type PayRangeKey = "all" | "lt5" | "5_8" | "8_11" | "11_15" | "15_plus" | "unspecified";
+type ScanScopeKey = "all" | "latest";
 
 function formatDate(raw: string): string {
   if (!raw) return "-";
@@ -92,6 +96,7 @@ export default function JobsView(props: JobsViewProps) {
   const [filter, setFilter] = createSignal("");
   const [selectedKeyword, setSelectedKeyword] = createSignal<string | null>(null);
   const [selectedPayRange, setSelectedPayRange] = createSignal<PayRangeKey>("all");
+  const [selectedScanScope, setSelectedScanScope] = createSignal<ScanScopeKey>("all");
   const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
 
   let headerEl!: HTMLDivElement;
@@ -163,14 +168,32 @@ export default function JobsView(props: JobsViewProps) {
       return (isNaN(db) ? 0 : db) - (isNaN(da) ? 0 : da);
     });
 
+  const latestRunId = () => {
+    const list = props.runs() || [];
+    if (list.length === 0) return null;
+    return list[0].id;
+  };
+
+  const latestRunCount = () => {
+    const list = props.jobs() || [];
+    const runId = latestRunId();
+    if (runId === null) return 0;
+    return list.filter((j) => j.run_id === runId).length;
+  };
+
   // When a keyword is selected: flat filtered list. When All: grouped.
   const visibleJobs = () => {
     const list = props.jobs() || [];
     const q = filter().toLowerCase();
     const kw = selectedKeyword();
     const payRange = selectedPayRange();
+    const scanScope = selectedScanScope();
+    const runId = latestRunId();
 
-    const baseByKeyword = kw ? list.filter((j) => (j.keyword || "Other") === kw) : list;
+    const baseByScope = scanScope === "latest" && runId !== null
+      ? list.filter((j) => j.run_id === runId)
+      : list;
+    const baseByKeyword = kw ? baseByScope.filter((j) => (j.keyword || "Other") === kw) : baseByScope;
     const base = payRange === "all"
       ? baseByKeyword
       : baseByKeyword.filter((j) => getPayRangeKey(j.pay) === payRange);
@@ -239,7 +262,7 @@ export default function JobsView(props: JobsViewProps) {
       <div class="flex flex-1 min-h-0">
 
         {/* Keyword side panel */}
-        <div class="w-40 md:w-48 shrink-0 flex flex-col border-r border-mk-separator py-3">
+        <div class="w-44 md:w-52 shrink-0 flex flex-col border-r border-mk-separator py-3">
           <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Keywords</p>
 
           {/* All */}
@@ -274,6 +297,39 @@ export default function JobsView(props: JobsViewProps) {
               </button>
             )}
           </For>
+
+          {/* Scan scope */}
+          <div class="mt-3 pt-3 border-t border-mk-separator">
+            <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Scan</p>
+
+            <button
+              class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                selectedScanScope() === "all"
+                  ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                  : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+              }`}
+              onClick={() => setSelectedScanScope("all")}
+            >
+              <span class="text-[12px] font-medium truncate">All scans</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
+                {(props.jobs() || []).length}
+              </span>
+            </button>
+
+            <button
+              class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                selectedScanScope() === "latest"
+                  ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                  : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+              }`}
+              onClick={() => setSelectedScanScope("latest")}
+            >
+              <span class="text-[12px] font-medium truncate">Latest scan</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
+                {latestRunCount()}
+              </span>
+            </button>
+          </div>
 
           {/* Pay ranges */}
           <div class="mt-3 pt-3 border-t border-mk-separator">

@@ -112,7 +112,7 @@ export default function Sidebar(props: SidebarProps) {
           >
             <For each={props.runs() ?? []}>
               {(run) => (
-                <div class="group flex items-start justify-between px-2.5 py-1.5 rounded-md hover:bg-mk-sidebar-hover transition-colors">
+                <div class="group flex items-start justify-between gap-2 px-2.5 py-1.5 rounded-md hover:bg-mk-sidebar-hover transition-colors">
                   <div class="min-w-0">
                     <p class="text-[11px] text-mk-sidebar-secondary truncate">{formatRunDate(run.started_at)}</p>
                     <p class="text-[10px] text-mk-sidebar-tertiary truncate mt-0.5">{run.keywords}</p>
@@ -122,12 +122,16 @@ export default function Sidebar(props: SidebarProps) {
                     </p>
                   </div>
                   <button
-                    class="ml-1.5 mt-0.5 shrink-0 opacity-0 group-hover:opacity-100 text-mk-sidebar-tertiary hover:text-mk-pink transition-all"
-                    title="Delete run"
-                    onClick={() => props.onDeleteRun(run.id)}
+                    class="mt-0.5 shrink-0 text-mk-sidebar-tertiary hover:text-mk-pink transition-colors"
+                    title="Delete this scan and its jobs"
+                    onClick={() => {
+                      if (confirm("Remove this scan and all jobs from this scan?")) {
+                        props.onDeleteRun(run.id);
+                      }
+                    }}
                   >
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0115.916 21H8.084a2.25 2.25 0 01-2.244-2.327L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0V4.875c0-1.242-.91-2.291-2.146-2.468A51.964 51.964 0 0012 2.25c-1.845 0-3.67.108-5.454.318C5.31 2.745 4.4 3.793 4.4 5.036v.255m7.6 3.709v9" />
                     </svg>
                   </button>
                 </div>

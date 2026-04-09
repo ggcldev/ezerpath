@@ -18,6 +18,7 @@ pub struct Job {
     pub scraped_at: String,
     pub is_new: bool,
     pub watchlisted: bool,
+    pub run_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,7 +151,7 @@ impl Database {
     pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut query = String::from(
-            "SELECT id, source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted
+            "SELECT id, source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id
              FROM jobs WHERE 1=1"
         );
 
@@ -228,5 +229,6 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         scraped_at: row.get(10)?,
         is_new: row.get::<_, i32>(11)? != 0,
         watchlisted: row.get::<_, i32>(12)? != 0,
+        run_id: row.get(13)?,
     })
 }

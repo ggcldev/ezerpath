@@ -165,6 +165,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
             scraped_at: now.clone(),
             is_new: true,
             watchlisted: false,
+            run_id: None,
         });
     }
 

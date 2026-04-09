@@ -20,6 +20,7 @@ interface Job {
   scraped_at: string;
   is_new: boolean;
   watchlisted: boolean;
+  run_id: number | null;
 }
 
 interface CrawlStats {
@@ -116,7 +117,12 @@ function App() {
             />
           </Match>
           <Match when={view() === "jobs"}>
-            <JobsView jobs={jobs} crawling={crawling()} onToggleWatchlist={handleToggleWatchlist} />
+            <JobsView
+              jobs={jobs}
+              runs={runs}
+              crawling={crawling()}
+              onToggleWatchlist={handleToggleWatchlist}
+            />
           </Match>
           <Match when={view() === "watchlist"}>
             <WatchlistView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} />
