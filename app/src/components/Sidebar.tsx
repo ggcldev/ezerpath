@@ -88,25 +88,30 @@ export default function Sidebar(props: SidebarProps) {
         </div>
       </nav>
 
-      {/* Theme toggle */}
-      <div class="px-3 py-3 border-t border-mk-sidebar-sep">
+      {/* Theme toggle switch */}
+      <div class="px-4 py-3 border-t border-mk-sidebar-sep flex items-center justify-center">
         <button
-          class="w-full flex items-center gap-2.5 px-2.5 py-[5px] rounded-md text-[13px] text-mk-sidebar-secondary hover:bg-mk-sidebar-hover hover:text-mk-sidebar-txt transition-all"
+          class="relative flex items-center w-12 h-6 rounded-full transition-colors duration-200 focus:outline-none"
+          style={{ background: props.dark ? "var(--mk-green)" : "rgba(0,0,0,0.28)" }}
           onClick={props.onToggleTheme}
+          title={props.dark ? "Switch to light" : "Switch to dark"}
         >
-          <Show
-            when={props.dark}
-            fallback={
-              <svg class="w-[15px] h-[15px] opacity-75" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
-              </svg>
-            }
-          >
-            <svg class="w-[15px] h-[15px] opacity-75" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+          {/* Track icons */}
+          <span class="absolute left-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
+            <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
             </svg>
-          </Show>
-          {props.dark ? "Light Mode" : "Dark Mode"}
+          </span>
+          <span class="absolute right-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
+            <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+            </svg>
+          </span>
+          {/* Thumb */}
+          <span
+            class="absolute w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200"
+            style={{ transform: props.dark ? "translateX(24px)" : "translateX(2px)" }}
+          />
         </button>
       </div>
     </aside>

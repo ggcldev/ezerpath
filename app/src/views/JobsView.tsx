@@ -64,12 +64,12 @@ export default function JobsView(props: JobsViewProps) {
           <thead class="sticky top-0 z-10" style={{ background: "var(--mk-bg)" }}>
             <tr class="border-b border-mk-separator">
               <th class="w-8 py-2" />
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-tertiary uppercase tracking-wider" style="width:35%">Title</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-tertiary uppercase tracking-wider" style="width:15%">Company</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-tertiary uppercase tracking-wider" style="width:8%">Pay</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-tertiary uppercase tracking-wider" style="width:10%">Source</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-tertiary uppercase tracking-wider" style="width:12%">Keyword</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-tertiary uppercase tracking-wider" style="width:10%">Posted</th>
+              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:35%">Title</th>
+              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:15%">Company</th>
+              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:8%">Pay</th>
+              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:10%">Source</th>
+              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:12%">Keyword</th>
+              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:10%">Posted</th>
               <th class="w-14 py-2" />
             </tr>
           </thead>
