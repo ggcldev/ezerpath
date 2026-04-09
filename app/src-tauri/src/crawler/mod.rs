@@ -190,18 +190,10 @@ mod tests {
 
     #[test]
     fn allows_only_https_onlinejobs_hosts() {
-        assert!(is_allowed_job_url(
-            "https://www.onlinejobs.ph/jobseekers/job/12345"
-        ));
-        assert!(is_allowed_job_url(
-            "https://onlinejobs.ph/jobseekers/job/12345"
-        ));
-        assert!(!is_allowed_job_url(
-            "http://www.onlinejobs.ph/jobseekers/job/12345"
-        ));
-        assert!(!is_allowed_job_url(
-            "https://evil.example.com/jobseekers/job/12345"
-        ));
+        assert!(is_allowed_job_url("https://www.onlinejobs.ph/jobseekers/job/123"));
+        assert!(is_allowed_job_url("https://onlinejobs.ph/jobseekers/job/123"));
+        assert!(!is_allowed_job_url("http://www.onlinejobs.ph/jobseekers/job/123"));
+        assert!(!is_allowed_job_url("https://evil.example.com/jobseekers/job/123"));
         assert!(!is_allowed_job_url("javascript:alert(1)"));
     }
 }
