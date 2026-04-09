@@ -1,4 +1,5 @@
 import { For, Show, Resource } from "solid-js";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type View = "scan" | "jobs" | "watchlist";
 
@@ -37,10 +38,19 @@ function formatRunDate(raw: string): string {
 }
 
 export default function Sidebar(props: SidebarProps) {
+  const handleWindowDrag = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button,input,a,textarea,select,[role='button']")) return;
+    void getCurrentWindow().startDragging();
+  };
+
   return (
     <aside class="w-52 bg-mk-sidebar flex flex-col shrink-0 h-screen border-r border-mk-sidebar-sep">
       {/* Titlebar drag region */}
-      <div class="h-12 shrink-0" data-tauri-drag-region />
+      <div
+        class="h-14 shrink-0"
+        onMouseDown={handleWindowDrag}
+      />
 
       {/* New Scan button */}
       <div class="px-3 mb-5">

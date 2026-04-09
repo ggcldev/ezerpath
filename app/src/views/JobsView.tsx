@@ -1,5 +1,6 @@
 import { createSignal, For, Show, Resource, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
 
 interface Job {
@@ -228,12 +229,20 @@ export default function JobsView(props: JobsViewProps) {
   const totalCount = () => visibleJobs().reduce((s, g) => s + g.jobs.length, 0);
 
   const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
+  const handleWindowDrag = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button,input,a,textarea,select,[role='button']")) return;
+    void getCurrentWindow().startDragging();
+  };
 
   return (
     <div class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
 
       {/* Titlebar */}
-      <div class="h-12 shrink-0 flex items-end px-3 sm:px-5 pb-0" data-tauri-drag-region>
+      <div
+        class="h-14 shrink-0 flex items-end px-3 sm:px-5 pb-0"
+        onMouseDown={handleWindowDrag}
+      >
         <div class="flex items-center justify-between w-full">
           <div class="flex items-baseline gap-2">
             <h2 class="text-[15px] font-semibold text-mk-text">All Jobs</h2>

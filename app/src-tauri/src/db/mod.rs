@@ -136,7 +136,7 @@ impl Database {
 
     pub fn insert_job(&self, job: &Job, run_id: i64) -> Result<bool, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let result = conn.execute(
+        let inserted = conn.execute(
             "INSERT OR IGNORE INTO jobs (source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
@@ -145,7 +145,41 @@ impl Database {
                 job.is_new as i32, run_id,
             ],
         )?;
-        Ok(result > 0)
+
+        if inserted > 0 {
+            return Ok(true);
+        }
+
+        // Existing job found again in a newer scan: refresh key fields and attach to latest run.
+        conn.execute(
+            "UPDATE jobs
+             SET title = ?1,
+                 company = ?2,
+                 pay = ?3,
+                 posted_at = ?4,
+                 url = ?5,
+                 summary = ?6,
+                 keyword = ?7,
+                 scraped_at = ?8,
+                 is_new = 0,
+                 run_id = ?9
+             WHERE source = ?10 AND source_id = ?11",
+            params![
+                job.title,
+                job.company,
+                job.pay,
+                job.posted_at,
+                job.url,
+                job.summary,
+                job.keyword,
+                job.scraped_at,
+                run_id,
+                job.source,
+                job.source_id,
+            ],
+        )?;
+
+        Ok(false)
     }
 
     pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {

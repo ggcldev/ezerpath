@@ -1,5 +1,6 @@
 import { createSignal, For, Show, Accessor, Resource, Setter } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 interface CrawlStats {
   keyword: string;
@@ -24,6 +25,11 @@ interface ScanViewProps {
 
 export default function ScanView(props: ScanViewProps) {
   const [newKeyword, setNewKeyword] = createSignal("");
+  const handleWindowDrag = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button,input,a,textarea,select,[role='button']")) return;
+    void getCurrentWindow().startDragging();
+  };
 
   const handleCrawl = async () => {
     props.setCrawling(true);
@@ -58,7 +64,10 @@ export default function ScanView(props: ScanViewProps) {
 
   return (
     <div class="flex-1 flex flex-col bg-mk-bg">
-      <div class="h-12 shrink-0" data-tauri-drag-region />
+      <div
+        class="h-14 shrink-0"
+        onMouseDown={handleWindowDrag}
+      />
 
       <div class="flex-1 overflow-y-auto">
         <div class="max-w-xl mx-auto px-6 pb-12">
