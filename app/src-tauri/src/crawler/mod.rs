@@ -14,13 +14,12 @@ pub struct Crawler {
 }
 
 impl Crawler {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, reqwest::Error> {
         let client = Client::builder()
             .user_agent("ezerpath/1.0 (+personal research crawler)")
             .timeout(Duration::from_secs(15))
-            .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+            .build()?;
+        Ok(Self { client })
     }
 
     pub async fn crawl_keyword(&self, keyword: &str, db: &Arc<Database>, days: u32, run_id: i64) -> Result<CrawlStats, String> {
@@ -36,7 +35,7 @@ impl Crawler {
             };
 
             let html = self.fetch(&url).await?;
-            let jobs = parse_search_page(&html, keyword);
+            let jobs = parse_search_page(&html, keyword)?;
 
             if jobs.is_empty() {
                 break;
@@ -73,15 +72,15 @@ pub struct CrawlStats {
     pub pages: usize,
 }
 
-fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
+fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
     let doc = Html::parse_document(html);
-    let card_sel = Selector::parse(".jobpost-cat-box").unwrap();
-    let title_sel = Selector::parse("h4").unwrap();
-    let date_sel = Selector::parse("p.fs-13 em").unwrap();
-    let pay_sel  = Selector::parse("dl.no-gutters dd").unwrap();
-    let desc_sel = Selector::parse(".desc").unwrap();
-    let logo_sel = Selector::parse(".jobpost-cat-box-logo").unwrap();
-    let link_sel = Selector::parse("a").unwrap();
+    let card_sel = Selector::parse(".jobpost-cat-box").map_err(|e| e.to_string())?;
+    let title_sel = Selector::parse("h4").map_err(|e| e.to_string())?;
+    let date_sel = Selector::parse("p.fs-13 em").map_err(|e| e.to_string())?;
+    let pay_sel  = Selector::parse("dl.no-gutters dd").map_err(|e| e.to_string())?;
+    let desc_sel = Selector::parse(".desc").map_err(|e| e.to_string())?;
+    let logo_sel = Selector::parse(".jobpost-cat-box-logo").map_err(|e| e.to_string())?;
+    let link_sel = Selector::parse("a").map_err(|e| e.to_string())?;
 
     let now = Utc::now().to_rfc3339();
     let mut jobs = Vec::new();
@@ -133,7 +132,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
                         format!("https://www.onlinejobs.ph{}", href)
                     };
                     // Extract numeric ID from end of URL
-                    source_id = href.rsplitn(2, '/').next()
+                    source_id = href.rsplit('/').next()
                         .and_then(|s| {
                             // ID might be at end after a dash: job-title-123456
                             s.rsplit('-').next()
@@ -147,7 +146,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
             }
         }
 
-        if url.is_empty() {
+        if url.is_empty() || !is_allowed_job_url(&url) {
             continue;
         }
 
@@ -169,5 +168,40 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
         });
     }
 
-    jobs
+    Ok(jobs)
+}
+
+fn is_allowed_job_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    matches!(
+        parsed.host_str(),
+        Some("onlinejobs.ph") | Some("www.onlinejobs.ph")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_job_url;
+
+    #[test]
+    fn allows_only_https_onlinejobs_hosts() {
+        assert!(is_allowed_job_url(
+            "https://www.onlinejobs.ph/jobseekers/job/12345"
+        ));
+        assert!(is_allowed_job_url(
+            "https://onlinejobs.ph/jobseekers/job/12345"
+        ));
+        assert!(!is_allowed_job_url(
+            "http://www.onlinejobs.ph/jobseekers/job/12345"
+        ));
+        assert!(!is_allowed_job_url(
+            "https://evil.example.com/jobseekers/job/12345"
+        ));
+        assert!(!is_allowed_job_url("javascript:alert(1)"));
+    }
 }

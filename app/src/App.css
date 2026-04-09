@@ -98,7 +98,6 @@ html, body, #root {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  user-select: none;
   background: var(--mk-bg);
   color: var(--mk-text);
 }

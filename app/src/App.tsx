@@ -1,4 +1,4 @@
-import { createSignal, createResource, createEffect, onCleanup, Match, Switch } from "solid-js";
+import { createSignal, createResource, createEffect, onCleanup, Match, Switch, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ScanView from "./views/ScanView";
@@ -38,14 +38,15 @@ function App() {
   const [version, setVersion] = createSignal(0);
   const [dark, setDark] = createSignal(true);
   const [dateRange, setDateRange] = createSignal<number>(3);
+  const [globalError, setGlobalError] = createSignal("");
 
   const toggleTheme = () => {
-    const next = !dark();
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
+    setDark((v) => !v);
   };
 
-  document.documentElement.classList.toggle("dark", dark());
+  createEffect(() => {
+    document.documentElement.classList.toggle("dark", dark());
+  });
 
   const bump = () => setVersion((v) => v + 1);
 
@@ -71,18 +72,33 @@ function App() {
   );
 
   const handleToggleWatchlist = async (jobId: number) => {
-    await invoke("toggle_watchlist", { jobId });
-    bump();
+    try {
+      await invoke("toggle_watchlist", { jobId });
+      setGlobalError("");
+      bump();
+    } catch (e) {
+      setGlobalError(String(e));
+    }
   };
 
   const handleDeleteRun = async (runId: number) => {
-    await invoke("delete_run", { runId });
-    bump();
+    try {
+      await invoke("delete_run", { runId });
+      setGlobalError("");
+      bump();
+    } catch (e) {
+      setGlobalError(String(e));
+    }
   };
 
   const handleClearAll = async () => {
-    await invoke("clear_all_jobs");
-    bump();
+    try {
+      await invoke("clear_all_jobs");
+      setGlobalError("");
+      bump();
+    } catch (e) {
+      setGlobalError(String(e));
+    }
   };
 
   const handleScanStart = () => setView("jobs");
@@ -100,6 +116,18 @@ function App() {
         onClearAll={handleClearAll}
       />
       <main class="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+        <Show when={globalError()}>
+          <div class="mx-4 mt-3 shrink-0 rounded-lg border border-mk-pink/30 bg-mk-grouped-bg px-3 py-2 flex items-center justify-between gap-3">
+            <p class="text-[12px] text-mk-pink truncate">{globalError()}</p>
+            <button
+              class="text-[11px] text-mk-secondary hover:text-mk-text"
+              aria-label="Dismiss error message"
+              onClick={() => setGlobalError("")}
+            >
+              Dismiss
+            </button>
+          </div>
+        </Show>
         <Switch>
           <Match when={view() === "scan"}>
             <ScanView

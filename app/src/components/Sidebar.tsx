@@ -107,8 +107,13 @@ export default function Sidebar(props: SidebarProps) {
           <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-sidebar-tertiary">Scan History</p>
           <button
             class="text-[10px] text-mk-sidebar-tertiary hover:text-mk-pink transition-colors"
-            onClick={props.onClearAll}
+            onClick={() => {
+              if (confirm("Clear all scan history and jobs? This cannot be undone.")) {
+                props.onClearAll();
+              }
+            }}
             title="Clear all jobs and history"
+            aria-label="Clear all jobs and scan history"
           >
             Clear all
           </button>
@@ -134,6 +139,7 @@ export default function Sidebar(props: SidebarProps) {
                   <button
                     class="mt-0.5 shrink-0 text-mk-sidebar-tertiary hover:text-mk-pink transition-colors"
                     title="Delete this scan and its jobs"
+                    aria-label="Delete scan run"
                     onClick={() => {
                       if (confirm("Remove this scan and all jobs from this scan?")) {
                         props.onDeleteRun(run.id);
@@ -158,6 +164,7 @@ export default function Sidebar(props: SidebarProps) {
           style={{ background: props.dark ? "var(--mk-green)" : "rgba(0,0,0,0.28)" }}
           onClick={props.onToggleTheme}
           title={props.dark ? "Switch to light" : "Switch to dark"}
+          aria-label={props.dark ? "Switch to light theme" : "Switch to dark theme"}
         >
           <span class="absolute left-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
             <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">

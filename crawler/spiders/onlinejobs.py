@@ -14,10 +14,14 @@ class OnlineJobsSpider(scrapy.Spider):
 
     # Max search result pages to crawl per keyword (30 jobs/page)
     MAX_PAGES_PER_KEYWORD = 5
+    DEFAULT_DAYS = 2
+    MIN_DAYS = 1
+    MAX_DAYS = 30
 
     def __init__(self, keyword=None, days="2", *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.max_age = timedelta(days=int(days))
+        self.days = self._normalize_days(days)
+        self.max_age = timedelta(days=self.days)
         self.cutoff = datetime.now(timezone.utc) - self.max_age
 
         if keyword:
@@ -36,13 +40,26 @@ class OnlineJobsSpider(scrapy.Spider):
             q = quote(kw)
             url = (
                 f"https://www.onlinejobs.ph/jobseekers/jobsearch"
-                f"?jobkeyword={q}&dateposted=2"
+                f"?jobkeyword={q}&dateposted={self.days}"
             )
             yield scrapy.Request(
                 url,
                 callback=self.parse_search,
                 cb_kwargs={"keyword": kw, "page": 1},
             )
+
+    @classmethod
+    def _normalize_days(cls, raw_days):
+        """Normalize user input into an integer days range accepted by the spider."""
+        try:
+            days = int(raw_days)
+        except (TypeError, ValueError):
+            return cls.DEFAULT_DAYS
+        if days < cls.MIN_DAYS:
+            return cls.MIN_DAYS
+        if days > cls.MAX_DAYS:
+            return cls.MAX_DAYS
+        return days
 
     def parse_search(self, response, keyword, page=1):
         cards = response.css(".jobpost-cat-box")

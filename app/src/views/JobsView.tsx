@@ -1,4 +1,4 @@
-import { createSignal, For, Show, Resource, onCleanup } from "solid-js";
+import { createSignal, createMemo, For, Show, Resource, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
@@ -138,7 +138,7 @@ export default function JobsView(props: JobsViewProps) {
   };
 
   // Keyword list derived from ALL jobs (not filtered), so panel always shows everything
-  const keywordList = () => {
+  const keywordList = createMemo(() => {
     const list = props.jobs() || [];
     const map = new Map<string, number>();
     for (const job of list) {
@@ -148,10 +148,10 @@ export default function JobsView(props: JobsViewProps) {
     return [...map.entries()]
       .map(([keyword, count]) => ({ keyword, count }))
       .sort((a, b) => b.count - a.count);
-  };
+  });
 
   // Pay ranges derived from all jobs, normalized to USD hourly equivalents.
-  const payRangeList = () => {
+  const payRangeList = createMemo(() => {
     const list = props.jobs() || [];
     const map = new Map<Exclude<PayRangeKey, "all">, number>();
     for (const key of PAY_RANGES) map.set(key.key, 0);
@@ -160,7 +160,7 @@ export default function JobsView(props: JobsViewProps) {
       map.set(key, (map.get(key) ?? 0) + 1);
     }
     return PAY_RANGES.map((r) => ({ ...r, count: map.get(r.key) ?? 0 }));
-  };
+  });
 
   const sortJobs = (jobs: Job[]) =>
     [...jobs].sort((a, b) => {
@@ -183,7 +183,7 @@ export default function JobsView(props: JobsViewProps) {
   };
 
   // When a keyword is selected: flat filtered list. When All: grouped.
-  const visibleJobs = () => {
+  const visibleJobs = createMemo(() => {
     const list = props.jobs() || [];
     const q = filter().toLowerCase();
     const kw = selectedKeyword();
@@ -222,13 +222,22 @@ export default function JobsView(props: JobsViewProps) {
       .sort((a, b) => {
         const ta = new Date(a.jobs[0]?.posted_at ?? "").getTime();
         const tb = new Date(b.jobs[0]?.posted_at ?? "").getTime();
-        return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
+      return (isNaN(tb) ? 0 : tb) - (isNaN(ta) ? 0 : ta);
       });
+  });
+
+  const totalCount = createMemo(() => visibleJobs().reduce((s, g) => s + g.jobs.length, 0));
+
+  const openUrl = (rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== "https:") return;
+      if (!["onlinejobs.ph", "www.onlinejobs.ph"].includes(parsed.hostname)) return;
+      invoke("plugin:opener|open_url", { url: parsed.toString() });
+    } catch {
+      // Ignore invalid URLs.
+    }
   };
-
-  const totalCount = () => visibleJobs().reduce((s, g) => s + g.jobs.length, 0);
-
-  const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
   const handleWindowDrag = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;
     if (target?.closest("button,input,a,textarea,select,[role='button']")) return;
@@ -457,6 +466,7 @@ export default function JobsView(props: JobsViewProps) {
                                 <td class={`text-center py-2.5 ${selectedKeyword() === null ? "pl-3" : ""}`}>
                                   <button
                                     class={`text-[15px] leading-none transition-colors ${job.watchlisted ? "text-mk-yellow" : "text-mk-tertiary hover:text-mk-yellow"}`}
+                                    aria-label={job.watchlisted ? "Remove from watchlist" : "Add to watchlist"}
                                     onClick={() => props.onToggleWatchlist(job.id)}
                                   >{job.watchlisted ? "\u2605" : "\u2606"}</button>
                                 </td>

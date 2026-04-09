@@ -92,7 +92,16 @@ export default function WatchlistView(props: WatchlistViewProps) {
     });
   };
 
-  const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
+  const openUrl = (rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== "https:") return;
+      if (!["onlinejobs.ph", "www.onlinejobs.ph"].includes(parsed.hostname)) return;
+      invoke("plugin:opener|open_url", { url: parsed.toString() });
+    } catch {
+      // Ignore invalid URLs.
+    }
+  };
   const handleWindowDrag = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;
     if (target?.closest("button,input,a,textarea,select,[role='button']")) return;
@@ -177,6 +186,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
                     <td class="text-center py-2.5">
                       <button
                         class="text-[15px] leading-none text-mk-yellow hover:opacity-80 transition-opacity"
+                        aria-label="Remove from watchlist"
                         onClick={() => props.onToggleWatchlist(job.id)}
                       >{"\u2605"}</button>
                     </td>

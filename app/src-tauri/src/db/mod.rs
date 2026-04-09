@@ -1,4 +1,5 @@
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -67,6 +68,9 @@ impl Database {
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 started_at   TEXT NOT NULL,
                 keywords     TEXT NOT NULL DEFAULT '',
+                status       TEXT NOT NULL DEFAULT 'running',
+                error_message TEXT,
+                finished_at  TEXT,
                 total_found  INTEGER NOT NULL DEFAULT 0,
                 total_new    INTEGER NOT NULL DEFAULT 0
             );
@@ -80,6 +84,10 @@ impl Database {
 
         // Migration: add run_id to jobs if not yet present (ignore error if already exists)
         conn.execute_batch("ALTER TABLE jobs ADD COLUMN run_id INTEGER REFERENCES runs(id);").ok();
+        // Migration: add run lifecycle fields if not yet present.
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';").ok();
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN error_message TEXT;").ok();
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN finished_at TEXT;").ok();
 
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -87,17 +95,30 @@ impl Database {
     pub fn insert_run(&self, keywords: &str, started_at: &str) -> Result<i64, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO runs (started_at, keywords) VALUES (?1, ?2)",
+            "INSERT INTO runs (started_at, keywords, status) VALUES (?1, ?2, 'running')",
             params![started_at, keywords],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn update_run(&self, run_id: i64, total_found: i64, total_new: i64) -> Result<(), rusqlite::Error> {
+    pub fn complete_run(&self, run_id: i64, total_found: i64, total_new: i64, finished_at: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE runs SET total_found = ?1, total_new = ?2 WHERE id = ?3",
-            params![total_found, total_new, run_id],
+            "UPDATE runs
+             SET total_found = ?1, total_new = ?2, status = 'succeeded', error_message = NULL, finished_at = ?3
+             WHERE id = ?4",
+            params![total_found, total_new, finished_at, run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn fail_run(&self, run_id: i64, total_found: i64, total_new: i64, error_message: &str, finished_at: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE runs
+             SET total_found = ?1, total_new = ?2, status = 'failed', error_message = ?3, finished_at = ?4
+             WHERE id = ?5",
+            params![total_found, total_new, error_message, finished_at, run_id],
         )?;
         Ok(())
     }
@@ -188,24 +209,24 @@ impl Database {
             "SELECT id, source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id
              FROM jobs WHERE 1=1"
         );
+        let mut bind_values: Vec<Value> = Vec::new();
 
         if watchlisted_only {
             query.push_str(" AND watchlisted = 1");
         }
         if let Some(days) = days_ago {
-            query.push_str(&format!(" AND scraped_at >= datetime('now', '-{} days')", days));
+            let bounded_days = days.clamp(0, 3650);
+            query.push_str(" AND julianday(scraped_at) >= julianday('now', ?)");
+            bind_values.push(Value::Text(format!("-{bounded_days} days")));
         }
-        if keyword.is_some() {
-            query.push_str(" AND keyword = ?1");
+        if let Some(kw) = keyword {
+            query.push_str(" AND keyword = ?");
+            bind_values.push(Value::Text(kw.to_string()));
         }
         query.push_str(" ORDER BY scraped_at DESC");
 
         let mut stmt = conn.prepare(&query)?;
-        let rows = if let Some(kw) = keyword {
-            stmt.query_map(params![kw], row_to_job)?
-        } else {
-            stmt.query_map([], row_to_job)?
-        };
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
 
         let mut jobs = Vec::new();
         for row in rows { jobs.push(row?); }
@@ -265,4 +286,75 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         watchlisted: row.get::<_, i32>(12)? != 0,
         run_id: row.get(13)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Database, Job};
+    use chrono::{Duration, Utc};
+    use tempfile::tempdir;
+
+    fn mk_job(source_id: &str, scraped_at: String) -> Job {
+        Job {
+            id: None,
+            source: "onlinejobs".to_string(),
+            source_id: source_id.to_string(),
+            title: "SEO Specialist".to_string(),
+            company: "Acme".to_string(),
+            pay: "$8/hr".to_string(),
+            posted_at: "2026-04-10T00:00:00Z".to_string(),
+            url: format!("https://www.onlinejobs.ph/jobseekers/job/{source_id}"),
+            summary: "summary".to_string(),
+            keyword: "seo specialist".to_string(),
+            scraped_at,
+            is_new: true,
+            watchlisted: false,
+            run_id: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_job_updates_to_latest_run_id() {
+        let tmp = tempdir().expect("tempdir");
+        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+
+        let run1 = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("run1");
+        let inserted_first = db
+            .insert_job(&mk_job("123", Utc::now().to_rfc3339()), run1)
+            .expect("insert first");
+        assert!(inserted_first);
+
+        let run2 = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("run2");
+        let inserted_second = db
+            .insert_job(&mk_job("123", Utc::now().to_rfc3339()), run2)
+            .expect("insert second");
+        assert!(!inserted_second);
+
+        let jobs = db.get_jobs(None, false, None).expect("jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].run_id, Some(run2));
+        assert!(!jobs[0].is_new);
+    }
+
+    #[test]
+    fn days_filter_excludes_old_rows_with_julianday_comparison() {
+        let tmp = tempdir().expect("tempdir");
+        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("run");
+
+        let recent = mk_job("recent", Utc::now().to_rfc3339());
+        let old = mk_job("old", (Utc::now() - Duration::days(5)).to_rfc3339());
+        db.insert_job(&recent, run).expect("insert recent");
+        db.insert_job(&old, run).expect("insert old");
+
+        let filtered = db.get_jobs(None, false, Some(1)).expect("filtered");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].source_id, "recent");
+    }
 }

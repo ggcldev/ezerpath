@@ -49,14 +49,24 @@ export default function ScanView(props: ScanViewProps) {
   const handleAddKeyword = async () => {
     const kw = newKeyword().trim();
     if (!kw) return;
-    await invoke("add_keyword", { keyword: kw });
-    setNewKeyword("");
-    props.onScanComplete();
+    try {
+      await invoke("add_keyword", { keyword: kw });
+      props.setCrawlError("");
+      setNewKeyword("");
+      props.onScanComplete();
+    } catch (e) {
+      props.setCrawlError(String(e));
+    }
   };
 
   const handleRemoveKeyword = async (kw: string) => {
-    await invoke("remove_keyword", { keyword: kw });
-    props.onScanComplete();
+    try {
+      await invoke("remove_keyword", { keyword: kw });
+      props.setCrawlError("");
+      props.onScanComplete();
+    } catch (e) {
+      props.setCrawlError(String(e));
+    }
   };
 
   const totalNew = () => props.crawlResult()?.reduce((sum, s) => sum + s.new, 0) ?? 0;
@@ -105,6 +115,7 @@ export default function ScanView(props: ScanViewProps) {
                       {kw}
                       <button
                         class="text-mk-tertiary hover:text-mk-pink transition-colors ml-0.5"
+                        aria-label={`Remove keyword ${kw}`}
                         onClick={() => handleRemoveKeyword(kw)}
                       >
                         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">

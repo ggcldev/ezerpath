@@ -5,14 +5,21 @@ use crawler::{Crawler, CrawlStats};
 use db::{Database, Job, ScanRun};
 use std::sync::Arc;
 use tauri::{Manager, State};
+use tokio::sync::Mutex;
 
 struct AppState {
     db: Arc<Database>,
     crawler: Crawler,
+    crawl_lock: Mutex<()>,
 }
 
 #[tauri::command]
 async fn crawl_jobs(state: State<'_, AppState>, days: Option<u32>) -> Result<Vec<CrawlStats>, String> {
+    let _crawl_guard = state
+        .crawl_lock
+        .try_lock()
+        .map_err(|_| "A scan is already in progress".to_string())?;
+
     let date_days = days.unwrap_or(3);
     let keywords = state.db.get_keywords().map_err(|e| e.to_string())?;
 
@@ -21,14 +28,27 @@ async fn crawl_jobs(state: State<'_, AppState>, days: Option<u32>) -> Result<Vec
     let run_id = state.db.insert_run(&keywords_str, &started_at).map_err(|e| e.to_string())?;
 
     let mut all_stats: Vec<CrawlStats> = Vec::new();
+    let mut total_found: i64 = 0;
+    let mut total_new: i64 = 0;
     for kw in &keywords {
-        let stats = state.crawler.crawl_keyword(kw, &state.db, date_days, run_id).await?;
-        all_stats.push(stats);
+        match state.crawler.crawl_keyword(kw, &state.db, date_days, run_id).await {
+            Ok(stats) => {
+                total_found += stats.found as i64;
+                total_new += stats.new as i64;
+                all_stats.push(stats);
+            }
+            Err(err) => {
+                let finished_at = chrono::Utc::now().to_rfc3339();
+                if let Err(mark_err) = state.db.fail_run(run_id, total_found, total_new, &err, &finished_at) {
+                    return Err(format!("{err} (failed to mark run failed: {mark_err})"));
+                }
+                return Err(err);
+            }
+        }
     }
 
-    let total_found: i64 = all_stats.iter().map(|s| s.found as i64).sum();
-    let total_new: i64 = all_stats.iter().map(|s| s.new as i64).sum();
-    state.db.update_run(run_id, total_found, total_new).map_err(|e| e.to_string())?;
+    let finished_at = chrono::Utc::now().to_rfc3339();
+    state.db.complete_run(run_id, total_found, total_new, &finished_at).map_err(|e| e.to_string())?;
 
     Ok(all_stats)
 }
@@ -78,10 +98,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_dir = app.path().app_data_dir().expect("failed to get app data dir");
-            let db = Arc::new(Database::new(app_dir).expect("failed to init database"));
-            let crawler = Crawler::new();
-            app.manage(AppState { db, crawler });
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| std::io::Error::other(format!("failed to get app data dir: {e}")))?;
+            let db = Arc::new(
+                Database::new(app_dir)
+                    .map_err(|e| std::io::Error::other(format!("failed to init database: {e}")))?,
+            );
+            let crawler = Crawler::new()
+                .map_err(|e| std::io::Error::other(format!("failed to init crawler: {e}")))?;
+            app.manage(AppState {
+                db,
+                crawler,
+                crawl_lock: Mutex::new(()),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
