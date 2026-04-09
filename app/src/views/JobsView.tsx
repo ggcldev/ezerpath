@@ -23,6 +23,8 @@ interface JobsViewProps {
   onToggleWatchlist: (jobId: number) => void;
 }
 
+type PayRangeKey = "all" | "lt5" | "5_8" | "8_11" | "11_15" | "15_plus" | "unspecified";
+
 function formatDate(raw: string): string {
   if (!raw) return "-";
   const d = new Date(raw);
@@ -34,17 +36,70 @@ function formatDate(raw: string): string {
 const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Company", "Link"];
 const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 130, 56];
 const STAR_W = 32;
+const GROUP_INDENT_W = 14;
+const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
+  { key: "lt5", label: "< $5/hr" },
+  { key: "5_8", label: "$5-7.99/hr" },
+  { key: "8_11", label: "$8-10.99/hr" },
+  { key: "11_15", label: "$11-14.99/hr" },
+  { key: "15_plus", label: "$15+/hr" },
+  { key: "unspecified", label: "Unspecified/Negotiable" },
+];
+const PHP_PER_USD = 56;
+const HOURS_PER_MONTH = 160;
+
+function parsePayToUsdHourly(payRaw: string): number | null {
+  const raw = (payRaw || "").trim();
+  if (!raw) return null;
+
+  const lower = raw.toLowerCase();
+  if (/(tbd|tba|tbc|negotiable|neg\b|depends|open|to be discuss|willing to pay|ranges?)/.test(lower)) {
+    return null;
+  }
+
+  const nums = [...lower.matchAll(/(\d[\d,]*(?:\.\d+)?)/g)]
+    .map((m) => Number(m[1].replace(/,/g, "")))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (nums.length === 0) return null;
+
+  const isRange = nums.length >= 2 && /(-|–|to)/.test(lower);
+  let amount = isRange ? (nums[0] + nums[1]) / 2 : nums[0];
+
+  if (/(php|₱)/.test(lower)) amount /= PHP_PER_USD;
+
+  const isHourly = /(\/\s*h|\/\s*hr|\/\s*hour|per\s*hour|\bhourly\b)/.test(lower);
+  const isMonthly = /(\/\s*mo|\/\s*month|\bmonthly\b|\bmonth\b)/.test(lower);
+
+  if (isHourly) return amount;
+  if (isMonthly) return amount / HOURS_PER_MONTH;
+
+  // OnlineJobs commonly mixes monthly and hourly values without explicit units.
+  if (amount >= 80) return amount / HOURS_PER_MONTH;
+  return amount;
+}
+
+function getPayRangeKey(payRaw: string): Exclude<PayRangeKey, "all"> {
+  const hourly = parsePayToUsdHourly(payRaw);
+  if (hourly === null) return "unspecified";
+  if (hourly < 5) return "lt5";
+  if (hourly < 8) return "5_8";
+  if (hourly < 11) return "8_11";
+  if (hourly < 15) return "11_15";
+  return "15_plus";
+}
 
 export default function JobsView(props: JobsViewProps) {
   const [filter, setFilter] = createSignal("");
   const [selectedKeyword, setSelectedKeyword] = createSignal<string | null>(null);
+  const [selectedPayRange, setSelectedPayRange] = createSignal<PayRangeKey>("all");
   const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
 
   let headerEl!: HTMLDivElement;
   let bodyEl!: HTMLDivElement;
   let drag = { active: false, i: 0, startX: 0, startW: 0 };
 
-  const totalWidth = () => widths().reduce((a, b) => a + b, 0) + STAR_W;
+  const leadColWidth = () => STAR_W + (selectedKeyword() === null ? GROUP_INDENT_W : 0);
+  const totalWidth = () => widths().reduce((a, b) => a + b, 0) + leadColWidth();
   const onBodyScroll = () => { headerEl.scrollLeft = bodyEl.scrollLeft; };
 
   const onMove = (e: MouseEvent) => {
@@ -89,6 +144,18 @@ export default function JobsView(props: JobsViewProps) {
       .sort((a, b) => b.count - a.count);
   };
 
+  // Pay ranges derived from all jobs, normalized to USD hourly equivalents.
+  const payRangeList = () => {
+    const list = props.jobs() || [];
+    const map = new Map<Exclude<PayRangeKey, "all">, number>();
+    for (const key of PAY_RANGES) map.set(key.key, 0);
+    for (const job of list) {
+      const key = getPayRangeKey(job.pay);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return PAY_RANGES.map((r) => ({ ...r, count: map.get(r.key) ?? 0 }));
+  };
+
   const sortJobs = (jobs: Job[]) =>
     [...jobs].sort((a, b) => {
       const da = new Date(a.posted_at).getTime();
@@ -101,8 +168,12 @@ export default function JobsView(props: JobsViewProps) {
     const list = props.jobs() || [];
     const q = filter().toLowerCase();
     const kw = selectedKeyword();
+    const payRange = selectedPayRange();
 
-    const base = kw ? list.filter((j) => (j.keyword || "Other") === kw) : list;
+    const baseByKeyword = kw ? list.filter((j) => (j.keyword || "Other") === kw) : list;
+    const base = payRange === "all"
+      ? baseByKeyword
+      : baseByKeyword.filter((j) => getPayRangeKey(j.pay) === payRange);
     const searched = q
       ? base.filter((j) =>
           j.title.toLowerCase().includes(q) ||
@@ -136,17 +207,17 @@ export default function JobsView(props: JobsViewProps) {
   const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
 
   return (
-    <div class="flex-1 flex flex-col min-h-0 bg-mk-bg">
+    <div class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
 
       {/* Titlebar */}
-      <div class="h-12 shrink-0 flex items-end px-4 pb-0" data-tauri-drag-region>
+      <div class="h-12 shrink-0 flex items-end px-3 sm:px-5 pb-0" data-tauri-drag-region>
         <div class="flex items-center justify-between w-full">
           <div class="flex items-baseline gap-2">
             <h2 class="text-[15px] font-semibold text-mk-text">All Jobs</h2>
             <span class="text-[12px] text-mk-tertiary">{totalCount()}</span>
           </div>
           <input
-            class="w-48 px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
+            class="w-40 sm:w-52 max-w-[48vw] px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
             type="text" placeholder="Filter..."
             value={filter()} onInput={(e) => setFilter(e.currentTarget.value)}
           />
@@ -168,7 +239,7 @@ export default function JobsView(props: JobsViewProps) {
       <div class="flex flex-1 min-h-0">
 
         {/* Keyword side panel */}
-        <div class="w-40 shrink-0 flex flex-col border-r border-mk-separator py-3">
+        <div class="w-40 md:w-48 shrink-0 flex flex-col border-r border-mk-separator py-3">
           <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Keywords</p>
 
           {/* All */}
@@ -200,6 +271,39 @@ export default function JobsView(props: JobsViewProps) {
             )}
           </For>
 
+          {/* Pay ranges */}
+          <div class="mt-3 pt-3 border-t border-mk-separator">
+            <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Pay (USD/hr)</p>
+
+            <button
+              class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                selectedPayRange() === "all"
+                  ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                  : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+              }`}
+              onClick={() => setSelectedPayRange("all")}
+            >
+              <span class="text-[12px] font-medium truncate">All rates</span>
+              <span class="text-[11px] text-mk-tertiary ml-1 shrink-0">{(props.jobs() || []).length}</span>
+            </button>
+
+            <For each={payRangeList()}>
+              {(item) => (
+                <button
+                  class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                    selectedPayRange() === item.key
+                      ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                      : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+                  }`}
+                  onClick={() => setSelectedPayRange(item.key)}
+                >
+                  <span class="text-[12px] truncate">{item.label}</span>
+                  <span class="text-[11px] text-mk-tertiary ml-1 shrink-0">{item.count}</span>
+                </button>
+              )}
+            </For>
+          </div>
+
           {/* Sources */}
           <div class="mt-auto px-3 pt-4 pb-1 border-t border-mk-separator">
             <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2">Sources</p>
@@ -213,12 +317,12 @@ export default function JobsView(props: JobsViewProps) {
         </div>
 
         {/* Table area */}
-        <div class="flex-1 flex flex-col min-h-0">
+        <div class="flex-1 flex flex-col min-h-0 min-w-0">
 
           {/* Fixed header */}
-          <div ref={headerEl!} class="shrink-0 overflow-hidden px-4 pt-3" style={{ background: "var(--mk-bg)" }}>
+          <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-3" style={{ background: "var(--mk-bg)" }}>
             <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: `${totalWidth()}px` }}>
-              <div style={{ width: `${STAR_W}px`, "min-width": `${STAR_W}px` }} />
+              <div style={{ width: `${leadColWidth()}px`, "min-width": `${leadColWidth()}px` }} />
               <For each={COLS}>
                 {(label, getI) => (
                   <div
@@ -244,10 +348,10 @@ export default function JobsView(props: JobsViewProps) {
           </div>
 
           {/* Scrollable body */}
-          <div ref={bodyEl!} class="flex-1 overflow-auto px-4" onScroll={onBodyScroll}>
+          <div ref={bodyEl!} class="flex-1 min-w-0 overflow-auto px-3 sm:px-5" onScroll={onBodyScroll}>
             <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: `${totalWidth()}px` }}>
               <colgroup>
-                <col style={{ width: `${STAR_W}px` }} />
+                <col style={{ width: `${leadColWidth()}px` }} />
                 <For each={widths()}>{(w) => <col style={{ width: `${w}px` }} />}</For>
               </colgroup>
               <tbody>
@@ -266,7 +370,7 @@ export default function JobsView(props: JobsViewProps) {
                           <Show when={selectedKeyword() === null}>
                             <tr>
                               <td colspan="8" style={{ padding: "0" }}>
-                                <div class="flex items-center gap-2 px-2 pt-4 pb-1" style={{ width: `${totalWidth()}px` }}>
+                                <div class="flex items-center gap-2 px-2 pt-4 pb-2" style={{ width: `${totalWidth()}px` }}>
                                   <span class="text-[11px] font-semibold uppercase tracking-widest text-mk-cyan">{group.keyword}</span>
                                   <span class="text-[11px] text-mk-tertiary">{group.jobs.length}</span>
                                   <div class="flex-1 h-px" style={{ background: "var(--mk-separator)" }} />
@@ -277,24 +381,24 @@ export default function JobsView(props: JobsViewProps) {
                           <For each={group.jobs}>
                             {(job) => (
                               <tr class="border-b border-mk-separator/50 hover:bg-mk-fill transition-colors">
-                                <td class="text-center py-2">
+                                <td class={`text-center py-2.5 ${selectedKeyword() === null ? "pl-3" : ""}`}>
                                   <button
                                     class={`text-[15px] leading-none transition-colors ${job.watchlisted ? "text-mk-yellow" : "text-mk-tertiary hover:text-mk-yellow"}`}
                                     onClick={() => props.onToggleWatchlist(job.id)}
                                   >{job.watchlisted ? "\u2605" : "\u2606"}</button>
                                 </td>
-                                <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
-                                <td class="px-2 py-2 overflow-hidden">
+                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden">
                                   <span class="block truncate text-[13px] font-medium text-mk-text">
                                     {job.title}
                                     <Show when={job.is_new}><span class="ml-1.5 px-1 py-px rounded text-[9px] font-bold bg-mk-green-dim text-mk-green">NEW</span></Show>
                                   </span>
                                 </td>
-                                <td class="px-2 py-2 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
-                                <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
-                                <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                                <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
-                                <td class="text-center py-2">
+                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
+                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
+                                <td class="text-center py-2.5">
                                   <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                                 </td>
                               </tr>

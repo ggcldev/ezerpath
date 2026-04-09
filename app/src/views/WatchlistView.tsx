@@ -94,16 +94,16 @@ export default function WatchlistView(props: WatchlistViewProps) {
   const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
 
   return (
-    <div class="flex-1 flex flex-col min-h-0 bg-mk-bg">
+    <div class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
       {/* Titlebar */}
-      <div class="h-12 shrink-0 flex items-end px-6 pb-0" data-tauri-drag-region>
+      <div class="h-12 shrink-0 flex items-end px-3 sm:px-5 pb-0" data-tauri-drag-region>
         <div class="flex items-center justify-between w-full">
           <div class="flex items-baseline gap-2">
             <h2 class="text-[15px] font-semibold text-mk-text">Watchlist</h2>
             <span class="text-[12px] text-mk-tertiary">{watchlistedJobs().length}</span>
           </div>
           <input
-            class="w-52 px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
+            class="w-40 sm:w-52 max-w-[48vw] px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
             type="text" placeholder="Filter..."
             value={filter()} onInput={(e) => setFilter(e.currentTarget.value)}
           />
@@ -111,7 +111,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
       </div>
 
       {/* Fixed header — outside scroll area */}
-      <div ref={headerEl!} class="shrink-0 overflow-hidden px-6 pt-3" style={{ background: "var(--mk-bg)" }}>
+      <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-3" style={{ background: "var(--mk-bg)" }}>
         <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: `${totalWidth()}px` }}>
           {/* Star col */}
           <div style={{ width: `${STAR_W}px`, "min-width": `${STAR_W}px` }} />
@@ -141,7 +141,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
       </div>
 
       {/* Scrollable body */}
-      <div ref={bodyEl!} class="flex-1 overflow-auto px-6" onScroll={onBodyScroll}>
+      <div ref={bodyEl!} class="flex-1 min-w-0 overflow-auto px-3 sm:px-5" onScroll={onBodyScroll}>
         <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: `${totalWidth()}px` }}>
           <colgroup>
             <col style={{ width: `${STAR_W}px` }} />
@@ -165,19 +165,19 @@ export default function WatchlistView(props: WatchlistViewProps) {
               >
                 {(job) => (
                   <tr class="border-b border-mk-separator/50 hover:bg-mk-fill transition-colors">
-                    <td class="text-center py-2">
+                    <td class="text-center py-2.5">
                       <button
                         class="text-[15px] leading-none text-mk-yellow hover:opacity-80 transition-opacity"
                         onClick={() => props.onToggleWatchlist(job.id)}
                       >{"\u2605"}</button>
                     </td>
-                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
-                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>
-                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
-                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
-                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
-                    <td class="text-center py-2">
+                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
+                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>
+                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
+                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
+                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
+                    <td class="text-center py-2.5">
                       <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                     </td>
                   </tr>

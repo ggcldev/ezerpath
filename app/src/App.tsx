@@ -98,7 +98,7 @@ function App() {
         onDeleteRun={handleDeleteRun}
         onClearAll={handleClearAll}
       />
-      <main class="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <main class="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
         <Switch>
           <Match when={view() === "scan"}>
             <ScanView
