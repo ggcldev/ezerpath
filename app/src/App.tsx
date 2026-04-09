@@ -1,6 +1,6 @@
-import { createSignal, createResource, Match, Switch } from "solid-js";
+import { createSignal, createResource, createEffect, onCleanup, Match, Switch } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import Sidebar, { type View } from "./components/Sidebar";
+import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ScanView from "./views/ScanView";
 import JobsView from "./views/JobsView";
 import WatchlistView from "./views/WatchlistView";
@@ -36,6 +36,7 @@ function App() {
   const [crawlError, setCrawlError] = createSignal("");
   const [version, setVersion] = createSignal(0);
   const [dark, setDark] = createSignal(true);
+  const [dateRange, setDateRange] = createSignal<number>(3);
 
   const toggleTheme = () => {
     const next = !dark();
@@ -43,14 +44,19 @@ function App() {
     document.documentElement.classList.toggle("dark", next);
   };
 
-  // Apply initial theme
   document.documentElement.classList.toggle("dark", dark());
 
   const bump = () => setVersion((v) => v + 1);
 
+  createEffect(() => {
+    if (!crawling()) return;
+    const id = setInterval(() => bump(), 1500);
+    onCleanup(() => clearInterval(id));
+  });
+
   const [jobs] = createResource(
-    () => version(),
-    () => invoke<Job[]>("get_jobs", { keyword: null, watchlistedOnly: false })
+    () => [version(), dateRange()] as const,
+    ([, days]) => invoke<Job[]>("get_jobs", { keyword: null, watchlistedOnly: false, daysAgo: days })
   );
 
   const [keywords, { refetch: refetchKeywords }] = createResource(
@@ -58,22 +64,39 @@ function App() {
     () => invoke<string[]>("get_keywords")
   );
 
-  const sources = () => ["OnlineJobs.ph"];
+  const [runs, { refetch: refetchRuns }] = createResource(
+    () => version(),
+    () => invoke<ScanRun[]>("get_runs")
+  );
 
   const handleToggleWatchlist = async (jobId: number) => {
     await invoke("toggle_watchlist", { jobId });
     bump();
   };
 
+  const handleDeleteRun = async (runId: number) => {
+    await invoke("delete_run", { runId });
+    bump();
+  };
+
+  const handleClearAll = async () => {
+    await invoke("clear_all_jobs");
+    bump();
+  };
+
+  const handleScanStart = () => setView("jobs");
+
   return (
     <div class="h-screen flex bg-mk-bg">
       <Sidebar
         currentView={view()}
         onNavigate={setView}
-        sources={sources()}
         crawling={crawling()}
         dark={dark()}
         onToggleTheme={toggleTheme}
+        runs={runs}
+        onDeleteRun={handleDeleteRun}
+        onClearAll={handleClearAll}
       />
       <main class="flex-1 flex flex-col min-h-0 overflow-hidden">
         <Switch>
@@ -86,11 +109,14 @@ function App() {
               crawlError={crawlError}
               setCrawlError={setCrawlError}
               keywords={keywords}
-              onScanComplete={() => { bump(); refetchKeywords(); }}
+              dateRange={dateRange}
+              setDateRange={setDateRange}
+              onScanStart={handleScanStart}
+              onScanComplete={() => { bump(); refetchKeywords(); refetchRuns(); }}
             />
           </Match>
           <Match when={view() === "jobs"}>
-            <JobsView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} />
+            <JobsView jobs={jobs} crawling={crawling()} onToggleWatchlist={handleToggleWatchlist} />
           </Match>
           <Match when={view() === "watchlist"}>
             <WatchlistView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} />

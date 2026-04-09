@@ -1,4 +1,4 @@
-import { createSignal, For, Show, Resource } from "solid-js";
+import { createSignal, For, Show, Resource, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 
 interface Job {
@@ -22,27 +22,80 @@ interface WatchlistViewProps {
   onToggleWatchlist: (jobId: number) => void;
 }
 
+function formatDate(raw: string): string {
+  if (!raw) return "-";
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
+}
+
+const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Company", "Link"];
+const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 130, 56];
+const STAR_W = 32;
+
 export default function WatchlistView(props: WatchlistViewProps) {
   const [filter, setFilter] = createSignal("");
+  const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
+
+  let headerEl!: HTMLDivElement;
+  let bodyEl!: HTMLDivElement;
+  let drag = { active: false, i: 0, startX: 0, startW: 0 };
+
+  const totalWidth = () => widths().reduce((a, b) => a + b, 0) + STAR_W;
+
+  const onBodyScroll = () => { headerEl.scrollLeft = bodyEl.scrollLeft; };
+
+  const onMove = (e: MouseEvent) => {
+    if (!drag.active) return;
+    setWidths((prev) => {
+      const next = [...prev];
+      next[drag.i] = Math.max(50, drag.startW + e.clientX - drag.startX);
+      return next;
+    });
+  };
+  const onUp = () => {
+    drag.active = false;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+  onCleanup(() => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  });
+  const startResize = (i: number, e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    drag = { active: true, i, startX: e.clientX, startW: widths()[i] };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
 
   const watchlistedJobs = () => {
     const list = (props.jobs() || []).filter((j) => j.watchlisted);
     const q = filter().toLowerCase();
-    if (!q) return list;
-    return list.filter(
-      (j) =>
-        j.title.toLowerCase().includes(q) ||
-        j.company.toLowerCase().includes(q) ||
-        j.keyword.toLowerCase().includes(q)
-    );
+    const filtered = q
+      ? list.filter((j) =>
+          j.title.toLowerCase().includes(q) ||
+          j.company.toLowerCase().includes(q) ||
+          j.keyword.toLowerCase().includes(q))
+      : list;
+    return [...filtered].sort((a, b) => {
+      const da = new Date(a.posted_at).getTime();
+      const db = new Date(b.posted_at).getTime();
+      return (isNaN(db) ? 0 : db) - (isNaN(da) ? 0 : da);
+    });
   };
 
-  const openUrl = (url: string) => {
-    invoke("plugin:opener|open_url", { url });
-  };
+  const openUrl = (url: string) => invoke("plugin:opener|open_url", { url });
 
   return (
     <div class="flex-1 flex flex-col min-h-0 bg-mk-bg">
+      {/* Titlebar */}
       <div class="h-12 shrink-0 flex items-end px-6 pb-0" data-tauri-drag-region>
         <div class="flex items-center justify-between w-full">
           <div class="flex items-baseline gap-2">
@@ -51,28 +104,49 @@ export default function WatchlistView(props: WatchlistViewProps) {
           </div>
           <input
             class="w-52 px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
-            type="text"
-            placeholder="Filter..."
-            value={filter()}
-            onInput={(e) => setFilter(e.currentTarget.value)}
+            type="text" placeholder="Filter..."
+            value={filter()} onInput={(e) => setFilter(e.currentTarget.value)}
           />
         </div>
       </div>
 
-      <div class="flex-1 overflow-y-auto px-6 pt-3">
-        <table class="w-full">
-          <thead class="sticky top-0 z-10" style={{ background: "var(--mk-bg)" }}>
-            <tr class="border-b border-mk-separator">
-              <th class="w-8 py-2" />
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:35%">Title</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:15%">Company</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:8%">Pay</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:10%">Source</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:12%">Keyword</th>
-              <th class="py-2 px-2 text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider" style="width:10%">Posted</th>
-              <th class="w-14 py-2" />
-            </tr>
-          </thead>
+      {/* Fixed header — outside scroll area */}
+      <div ref={headerEl!} class="shrink-0 overflow-hidden px-6 pt-3" style={{ background: "var(--mk-bg)" }}>
+        <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: `${totalWidth()}px` }}>
+          {/* Star col */}
+          <div style={{ width: `${STAR_W}px`, "min-width": `${STAR_W}px` }} />
+          {/* Data cols */}
+          <For each={COLS}>
+            {(label, getI) => (
+              <div
+                class="relative text-[11px] font-semibold text-mk-secondary uppercase tracking-wider px-2 select-none"
+                style={{ width: `${widths()[getI()]}px`, "min-width": `${widths()[getI()]}px` }}
+              >
+                {label}
+                <div
+                  style={{
+                    position: "absolute", right: "0", top: "0",
+                    width: "8px", height: "100%",
+                    cursor: "col-resize",
+                    display: "flex", "align-items": "center", "justify-content": "center",
+                  }}
+                  on:mousedown={(e: MouseEvent) => startResize(getI(), e)}
+                >
+                  <div style={{ width: "2px", height: "12px", "border-radius": "1px", background: "var(--mk-separator)" }} />
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+      </div>
+
+      {/* Scrollable body */}
+      <div ref={bodyEl!} class="flex-1 overflow-auto px-6" onScroll={onBodyScroll}>
+        <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: `${totalWidth()}px` }}>
+          <colgroup>
+            <col style={{ width: `${STAR_W}px` }} />
+            <For each={widths()}>{(w) => <col style={{ width: `${w}px` }} />}</For>
+          </colgroup>
           <tbody>
             <Show
               when={!props.jobs.loading}
@@ -91,29 +165,20 @@ export default function WatchlistView(props: WatchlistViewProps) {
               >
                 {(job) => (
                   <tr class="border-b border-mk-separator/50 hover:bg-mk-fill transition-colors">
-                    <td class="text-center">
+                    <td class="text-center py-2">
                       <button
                         class="text-[15px] leading-none text-mk-yellow hover:opacity-80 transition-opacity"
                         onClick={() => props.onToggleWatchlist(job.id)}
-                      >
-                        {"\u2605"}
-                      </button>
+                      >{"\u2605"}</button>
                     </td>
-                    <td class="px-2 py-2 truncate text-[13px] font-medium text-mk-text">{job.title}</td>
-                    <td class="px-2 py-2 truncate text-[13px] text-mk-secondary">{job.company || "-"}</td>
-                    <td class="px-2 py-2 truncate text-[13px] text-mk-secondary">{job.pay || "-"}</td>
-                    <td class="px-2 py-2 text-[12px] text-mk-tertiary">{job.source}</td>
-                    <td class="px-2 py-2">
-                      <span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span>
-                    </td>
-                    <td class="px-2 py-2 text-[12px] text-mk-tertiary">{job.posted_at.slice(0, 10) || "-"}</td>
-                    <td class="text-center">
-                      <button
-                        class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all"
-                        onClick={() => openUrl(job.url)}
-                      >
-                        Open
-                      </button>
+                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
+                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>
+                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
+                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
+                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                    <td class="px-2 py-2 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
+                    <td class="text-center py-2">
+                      <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                     </td>
                   </tr>
                 )}

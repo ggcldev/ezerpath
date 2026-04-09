@@ -23,16 +23,16 @@ impl Crawler {
         Self { client }
     }
 
-    pub async fn crawl_keyword(&self, keyword: &str, db: &Arc<Database>) -> Result<CrawlStats, String> {
+    pub async fn crawl_keyword(&self, keyword: &str, db: &Arc<Database>, days: u32, run_id: i64) -> Result<CrawlStats, String> {
         let mut stats = CrawlStats { keyword: keyword.to_string(), found: 0, new: 0, pages: 0 };
         let encoded = urlencoding::encode(keyword);
 
         for page_num in 0..MAX_PAGES {
             let offset = page_num * 30;
             let url = if offset == 0 {
-                format!("{}?jobkeyword={}&dateposted=2", BASE_URL, encoded)
+                format!("{}?jobkeyword={}&dateposted={}", BASE_URL, encoded, days)
             } else {
-                format!("{}/{}?jobkeyword={}&dateposted=2", BASE_URL, offset, encoded)
+                format!("{}/{}?jobkeyword={}&dateposted={}", BASE_URL, offset, encoded, days)
             };
 
             let html = self.fetch(&url).await?;
@@ -45,7 +45,7 @@ impl Crawler {
             stats.pages += 1;
             for job in &jobs {
                 stats.found += 1;
-                if db.insert_job(job).map_err(|e| e.to_string())? {
+                if db.insert_job(job, run_id).map_err(|e| e.to_string())? {
                     stats.new += 1;
                 }
             }
@@ -78,6 +78,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
     let card_sel = Selector::parse(".jobpost-cat-box").unwrap();
     let title_sel = Selector::parse("h4").unwrap();
     let date_sel = Selector::parse("p.fs-13 em").unwrap();
+    let pay_sel  = Selector::parse("dl.no-gutters dd").unwrap();
     let desc_sel = Selector::parse(".desc").unwrap();
     let logo_sel = Selector::parse(".jobpost-cat-box-logo").unwrap();
     let link_sel = Selector::parse("a").unwrap();
@@ -106,6 +107,11 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
             .and_then(|e| e.value().attr("alt"))
             .unwrap_or("")
             .to_string();
+
+        let pay = card.select(&pay_sel)
+            .next()
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .unwrap_or_default();
 
         let summary = card.select(&desc_sel)
             .next()
@@ -151,7 +157,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Vec<Job> {
             source_id,
             title,
             company,
-            pay: String::new(),
+            pay,
             posted_at,
             url,
             summary,

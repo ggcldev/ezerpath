@@ -1,4 +1,4 @@
-import { createSignal, For, Show, Accessor, Resource } from "solid-js";
+import { createSignal, For, Show, Accessor, Resource, Setter } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 
 interface CrawlStats {
@@ -16,6 +16,9 @@ interface ScanViewProps {
   crawlError: Accessor<string>;
   setCrawlError: (v: string) => void;
   keywords: Resource<string[]>;
+  dateRange: Accessor<number>;
+  setDateRange: Setter<number>;
+  onScanStart: () => void;
   onScanComplete: () => void;
 }
 
@@ -26,8 +29,9 @@ export default function ScanView(props: ScanViewProps) {
     props.setCrawling(true);
     props.setCrawlResult(null);
     props.setCrawlError("");
+    props.onScanStart();
     try {
-      const stats = await invoke<CrawlStats[]>("crawl_jobs");
+      const stats = await invoke<CrawlStats[]>("crawl_jobs", { days: props.dateRange() });
       props.setCrawlResult(stats);
       props.onScanComplete();
     } catch (e: any) {
@@ -103,6 +107,34 @@ export default function ScanView(props: ScanViewProps) {
                 </For>
               </Show>
             </div>
+          </div>
+
+          {/* Date range */}
+          <div class="mb-8">
+            <label class="block text-[11px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2.5">Posted Within</label>
+            <div class="flex gap-1.5">
+              {([
+                { label: "Today", days: 1 },
+                { label: "3 days", days: 3 },
+                { label: "1 week", days: 7 },
+                { label: "2 weeks", days: 14 },
+              ] as const).map(({ label, days }) => (
+                <button
+                  class={`flex-1 py-1.5 text-[12px] font-medium rounded-lg border transition-all ${
+                    props.dateRange() === days
+                      ? "bg-mk-green border-mk-green"
+                      : "bg-mk-fill border-mk-separator text-mk-secondary hover:border-mk-green/50 hover:text-mk-text"
+                  }`}
+                  style={props.dateRange() === days ? { color: "var(--mk-sidebar)" } : {}}
+                  onClick={() => props.setDateRange(days)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p class="text-[11px] text-mk-tertiary mt-2">
+              Only jobs posted in the last {props.dateRange() === 1 ? "24 hours" : `${props.dateRange()} days`} will be fetched and shown.
+            </p>
           </div>
 
           {/* Scan button */}

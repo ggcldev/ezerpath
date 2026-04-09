@@ -41,15 +41,15 @@
     --mk-sidebar-active-bg:  #403E41;
     --mk-sidebar-active-txt: #A9DC76;
     --mk-sidebar-txt:        #FCFCFA;
-    --mk-sidebar-secondary:  #939293;
-    --mk-sidebar-tertiary:   #6b696c;
+    --mk-sidebar-secondary:  #b8b6b8;
+    --mk-sidebar-tertiary:   #888688;
     --mk-sidebar-sep:        rgba(255,255,255,0.07);
     --mk-text:               #FCFCFA;
-    --mk-secondary:          #939293;
-    --mk-tertiary:           #6b696c;
-    --mk-separator:          rgba(255,255,255,0.07);
-    --mk-fill:               rgba(255,255,255,0.06);
-    --mk-fill-hover:         rgba(255,255,255,0.09);
+    --mk-secondary:          #c0bec0;
+    --mk-tertiary:           #908e90;
+    --mk-separator:          rgba(255,255,255,0.09);
+    --mk-fill:               rgba(255,255,255,0.07);
+    --mk-fill-hover:         rgba(255,255,255,0.11);
     --mk-grouped-bg:         #403E41;
     /* Accents */
     --mk-green:              #A9DC76;
