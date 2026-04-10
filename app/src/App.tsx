@@ -4,6 +4,7 @@ import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ScanView from "./views/ScanView";
 import JobsView from "./views/JobsView";
 import WatchlistView from "./views/WatchlistView";
+import { runMutation } from "./utils/mutations";
 import "./App.css";
 
 interface Job {
@@ -72,33 +73,27 @@ function App() {
   );
 
   const handleToggleWatchlist = async (jobId: number) => {
-    try {
-      await invoke("toggle_watchlist", { jobId });
-      setGlobalError("");
-      bump();
-    } catch (e) {
-      setGlobalError(String(e));
-    }
+    await runMutation(
+      () => invoke("toggle_watchlist", { jobId }),
+      bump,
+      setGlobalError
+    );
   };
 
   const handleDeleteRun = async (runId: number) => {
-    try {
-      await invoke("delete_run", { runId });
-      setGlobalError("");
-      bump();
-    } catch (e) {
-      setGlobalError(String(e));
-    }
+    await runMutation(
+      () => invoke("delete_run", { runId }),
+      bump,
+      setGlobalError
+    );
   };
 
   const handleClearAll = async () => {
-    try {
-      await invoke("clear_all_jobs");
-      setGlobalError("");
-      bump();
-    } catch (e) {
-      setGlobalError(String(e));
-    }
+    await runMutation(
+      () => invoke("clear_all_jobs"),
+      bump,
+      setGlobalError
+    );
   };
 
   const handleScanStart = () => setView("jobs");

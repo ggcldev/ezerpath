@@ -95,7 +95,7 @@ async fn remove_keyword(state: State<'_, AppState>, keyword: String) -> Result<(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_dir = app
@@ -126,6 +126,9 @@ pub fn run() {
             add_keyword,
             remove_keyword,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    if let Err(e) = result {
+        eprintln!("error while running tauri application: {e}");
+    }
 }

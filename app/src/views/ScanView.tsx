@@ -1,6 +1,7 @@
 import { createSignal, For, Show, Accessor, Resource, Setter } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { runMutation } from "../utils/mutations";
 
 interface CrawlStats {
   keyword: string;
@@ -49,24 +50,22 @@ export default function ScanView(props: ScanViewProps) {
   const handleAddKeyword = async () => {
     const kw = newKeyword().trim();
     if (!kw) return;
-    try {
-      await invoke("add_keyword", { keyword: kw });
-      props.setCrawlError("");
-      setNewKeyword("");
-      props.onScanComplete();
-    } catch (e) {
-      props.setCrawlError(String(e));
-    }
+    await runMutation(
+      () => invoke("add_keyword", { keyword: kw }),
+      () => {
+        setNewKeyword("");
+        props.onScanComplete();
+      },
+      props.setCrawlError
+    );
   };
 
   const handleRemoveKeyword = async (kw: string) => {
-    try {
-      await invoke("remove_keyword", { keyword: kw });
-      props.setCrawlError("");
-      props.onScanComplete();
-    } catch (e) {
-      props.setCrawlError(String(e));
-    }
+    await runMutation(
+      () => invoke("remove_keyword", { keyword: kw }),
+      props.onScanComplete,
+      props.setCrawlError
+    );
   };
 
   const totalNew = () => props.crawlResult()?.reduce((sum, s) => sum + s.new, 0) ?? 0;

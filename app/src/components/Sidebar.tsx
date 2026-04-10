@@ -1,5 +1,6 @@
 import { For, Show, Resource } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { tryClearAll } from "../utils/confirmations";
 
 export type View = "scan" | "jobs" | "watchlist";
 
@@ -107,11 +108,7 @@ export default function Sidebar(props: SidebarProps) {
           <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-sidebar-tertiary">Scan History</p>
           <button
             class="text-[10px] text-mk-sidebar-tertiary hover:text-mk-pink transition-colors"
-            onClick={() => {
-              if (confirm("Clear all scan history and jobs? This cannot be undone.")) {
-                props.onClearAll();
-              }
-            }}
+            onClick={() => { tryClearAll(confirm, props.onClearAll); }}
             title="Clear all jobs and history"
             aria-label="Clear all jobs and scan history"
           >

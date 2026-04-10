@@ -2,7 +2,7 @@ use rusqlite::{Connection, params, params_from_iter};
 use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -36,6 +36,12 @@ pub struct Database {
 }
 
 impl Database {
+    fn conn(&self) -> Result<MutexGuard<'_, Connection>, rusqlite::Error> {
+        self.conn
+            .lock()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("database mutex poisoned: {e}")))))
+    }
+
     pub fn new(app_dir: PathBuf) -> Result<Self, rusqlite::Error> {
         std::fs::create_dir_all(&app_dir).ok();
         let db_path = app_dir.join("ezerpath.db");
@@ -93,7 +99,7 @@ impl Database {
     }
 
     pub fn insert_run(&self, keywords: &str, started_at: &str) -> Result<i64, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO runs (started_at, keywords, status) VALUES (?1, ?2, 'running')",
             params![started_at, keywords],
@@ -102,7 +108,7 @@ impl Database {
     }
 
     pub fn complete_run(&self, run_id: i64, total_found: i64, total_new: i64, finished_at: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE runs
              SET total_found = ?1, total_new = ?2, status = 'succeeded', error_message = NULL, finished_at = ?3
@@ -113,7 +119,7 @@ impl Database {
     }
 
     pub fn fail_run(&self, run_id: i64, total_found: i64, total_new: i64, error_message: &str, finished_at: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE runs
              SET total_found = ?1, total_new = ?2, status = 'failed', error_message = ?3, finished_at = ?4
@@ -124,7 +130,7 @@ impl Database {
     }
 
     pub fn get_runs(&self) -> Result<Vec<ScanRun>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, started_at, keywords, total_found, total_new FROM runs ORDER BY started_at DESC"
         )?;
@@ -143,20 +149,20 @@ impl Database {
     }
 
     pub fn delete_run(&self, run_id: i64) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute("DELETE FROM jobs WHERE run_id = ?1", params![run_id])?;
         conn.execute("DELETE FROM runs WHERE id = ?1", params![run_id])?;
         Ok(())
     }
 
     pub fn clear_all_jobs(&self) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute_batch("DELETE FROM jobs; DELETE FROM runs;")?;
         Ok(())
     }
 
     pub fn insert_job(&self, job: &Job, run_id: i64) -> Result<bool, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO jobs (source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -204,7 +210,7 @@ impl Database {
     }
 
     pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         let mut query = String::from(
             "SELECT id, source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id
              FROM jobs WHERE 1=1"
@@ -234,7 +240,7 @@ impl Database {
     }
 
     pub fn toggle_watchlist(&self, job_id: i64) -> Result<bool, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE jobs SET watchlisted = CASE WHEN watchlisted = 1 THEN 0 ELSE 1 END WHERE id = ?1",
             params![job_id],
@@ -248,7 +254,7 @@ impl Database {
     }
 
     pub fn get_keywords(&self) -> Result<Vec<String>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare("SELECT keyword FROM keywords ORDER BY keyword")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         let mut keywords = Vec::new();
@@ -257,13 +263,13 @@ impl Database {
     }
 
     pub fn add_keyword(&self, keyword: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute("INSERT OR IGNORE INTO keywords (keyword) VALUES (?1)", params![keyword])?;
         Ok(())
     }
 
     pub fn remove_keyword(&self, keyword: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn()?;
         conn.execute("DELETE FROM keywords WHERE keyword = ?1", params![keyword])?;
         Ok(())
     }

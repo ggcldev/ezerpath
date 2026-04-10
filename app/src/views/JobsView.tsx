@@ -2,6 +2,7 @@ import { createSignal, createMemo, For, Show, Resource, onCleanup } from "solid-
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
+import { filterJobsByScope, getLatestRunId, latestRunCount as calcLatestRunCount } from "../utils/jobs";
 
 interface Job {
   id: number;
@@ -170,16 +171,11 @@ export default function JobsView(props: JobsViewProps) {
     });
 
   const latestRunId = () => {
-    const list = props.runs() || [];
-    if (list.length === 0) return null;
-    return list[0].id;
+    return getLatestRunId(props.runs() || []);
   };
 
   const latestRunCount = () => {
-    const list = props.jobs() || [];
-    const runId = latestRunId();
-    if (runId === null) return 0;
-    return list.filter((j) => j.run_id === runId).length;
+    return calcLatestRunCount(props.jobs() || [], latestRunId());
   };
 
   // When a keyword is selected: flat filtered list. When All: grouped.
@@ -191,9 +187,7 @@ export default function JobsView(props: JobsViewProps) {
     const scanScope = selectedScanScope();
     const runId = latestRunId();
 
-    const baseByScope = scanScope === "latest" && runId !== null
-      ? list.filter((j) => j.run_id === runId)
-      : list;
+    const baseByScope = filterJobsByScope(list, scanScope, runId);
     const baseByKeyword = kw ? baseByScope.filter((j) => (j.keyword || "Other") === kw) : baseByScope;
     const base = payRange === "all"
       ? baseByKeyword
