@@ -4,9 +4,9 @@
 @layer base {
   :root {
     /* Light Monokai (Paper-ish) */
-    --mk-bg:                 #f9f8f5;
-    --mk-surface:            #f0ede8;
-    --mk-sidebar:            #e8e5e0;
+    --mk-bg:                 #f5f2eb;
+    --mk-surface:            #ede8df;
+    --mk-sidebar:            #e8e2d8;
     --mk-sidebar-hover:      rgba(0,0,0,0.06);
     --mk-sidebar-active-bg:  rgba(0,0,0,0.08);
     --mk-sidebar-active-txt: #3d8b1a;
@@ -17,14 +17,16 @@
     --mk-text:               #272822;
     --mk-secondary:          #75715e;
     --mk-tertiary:           #aaa89f;
-    --mk-separator:          rgba(0,0,0,0.08);
-    --mk-fill:               rgba(0,0,0,0.05);
-    --mk-fill-hover:         rgba(0,0,0,0.07);
-    --mk-grouped-bg:         #ffffff;
+    --mk-separator:          rgba(0,0,0,0.09);
+    --mk-fill:               rgba(0,0,0,0.06);
+    --mk-fill-hover:         rgba(0,0,0,0.09);
+    --mk-grouped-bg:         #faf7f1;
+    --mk-row-hover:          #dfe9d3;
+    --mk-row-alt:            #efebe3;
     /* Accents */
     --mk-green:              #3d8b1a;
     --mk-green-hover:        #2f6e14;
-    --mk-green-dim:          rgba(61,139,26,0.12);
+    --mk-green-dim:          rgba(61,139,26,0.24);
     --mk-pink:               #c0254e;
     --mk-cyan:               #0088aa;
     --mk-orange:             #b86800;
@@ -34,9 +36,9 @@
 
   .dark {
     /* Dark Monokai Pro */
-    --mk-bg:                 #363338;
+    --mk-bg:                 #2D2A2E;
     --mk-surface:            #403E41;
-    --mk-sidebar:            #2D2A2E;
+    --mk-sidebar:            #363338;
     --mk-sidebar-hover:      #3A373C;
     --mk-sidebar-active-bg:  #403E41;
     --mk-sidebar-active-txt: #A9DC76;
@@ -51,6 +53,8 @@
     --mk-fill:               rgba(255,255,255,0.07);
     --mk-fill-hover:         rgba(255,255,255,0.11);
     --mk-grouped-bg:         #403E41;
+    --mk-row-hover:          #4a5a3f;
+    --mk-row-alt:            #3a373c;
     /* Accents */
     --mk-green:              #A9DC76;
     --mk-green-hover:        #96ca5f;
@@ -81,6 +85,8 @@
   --color-mk-fill:               var(--mk-fill);
   --color-mk-fill-hover:         var(--mk-fill-hover);
   --color-mk-grouped-bg:         var(--mk-grouped-bg);
+  --color-mk-row-hover:          var(--mk-row-hover);
+  --color-mk-row-alt:            var(--mk-row-alt);
   --color-mk-green:              var(--mk-green);
   --color-mk-green-hover:        var(--mk-green-hover);
   --color-mk-green-dim:          var(--mk-green-dim);

@@ -181,8 +181,12 @@ export default function WatchlistView(props: WatchlistViewProps) {
                   </tr>
                 }
               >
-                {(job) => (
-                  <tr class="border-b border-mk-separator/50 hover:bg-mk-fill transition-colors">
+                {(job, rowIndex) => (
+                  <tr
+                    class={`border-b border-mk-separator/50 hover:bg-mk-row-hover transition-colors ${
+                      rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
+                    }`}
+                  >
                     <td class="text-center py-2.5">
                       <button
                         class="text-[15px] leading-none text-mk-yellow hover:opacity-80 transition-opacity"

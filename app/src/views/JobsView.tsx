@@ -455,8 +455,12 @@ export default function JobsView(props: JobsViewProps) {
                             </tr>
                           </Show>
                           <For each={group.jobs}>
-                            {(job) => (
-                              <tr class="border-b border-mk-separator/50 hover:bg-mk-fill transition-colors">
+                            {(job, rowIndex) => (
+                              <tr
+                                class={`border-b border-mk-separator/50 hover:bg-mk-row-hover transition-colors ${
+                                  rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
+                                }`}
+                              >
                                 <td class={`text-center py-2.5 ${selectedKeyword() === null ? "pl-3" : ""}`}>
                                   <button
                                     class={`text-[15px] leading-none transition-colors ${job.watchlisted ? "text-mk-yellow" : "text-mk-tertiary hover:text-mk-yellow"}`}
