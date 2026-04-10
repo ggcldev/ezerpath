@@ -39,8 +39,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Company", "Link"];
-const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 130, 56];
+const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
+const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 56];
 const STAR_W = 32;
 const GROUP_INDENT_W = 14;
 const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
@@ -433,11 +433,11 @@ export default function JobsView(props: JobsViewProps) {
               <tbody>
                 <Show
                   when={!props.jobs.loading}
-                  fallback={<tr><td colspan="8" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
+                  fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
                 >
                   <Show
                     when={totalCount() > 0}
-                    fallback={<tr><td colspan="8" class="text-center py-16 text-[13px] text-mk-tertiary">No jobs yet</td></tr>}
+                    fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">No jobs yet</td></tr>}
                   >
                     <For each={visibleJobs()}>
                       {(group) => (
@@ -445,7 +445,7 @@ export default function JobsView(props: JobsViewProps) {
                           {/* Group header — only shown when viewing All */}
                           <Show when={selectedKeyword() === null}>
                             <tr>
-                              <td colspan="8" style={{ padding: "0" }}>
+                              <td colspan="7" style={{ padding: "0" }}>
                                 <div class="flex items-center gap-2 px-2 pt-4 pb-2" style={{ width: `${totalWidth()}px` }}>
                                   <span class="text-[11px] font-semibold uppercase tracking-widest text-mk-cyan">{group.keyword}</span>
                                   <span class="text-[11px] text-mk-tertiary">{group.jobs.length}</span>
@@ -474,7 +474,6 @@ export default function JobsView(props: JobsViewProps) {
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
                                 <td class="text-center py-2.5">
                                   <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                                 </td>

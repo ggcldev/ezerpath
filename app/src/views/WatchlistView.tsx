@@ -31,8 +31,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Company", "Link"];
-const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 130, 56];
+const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
+const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 56];
 const STAR_W = 32;
 
 export default function WatchlistView(props: WatchlistViewProps) {
@@ -168,13 +168,13 @@ export default function WatchlistView(props: WatchlistViewProps) {
           <tbody>
             <Show
               when={!props.jobs.loading}
-              fallback={<tr><td colspan="8" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
+              fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
             >
               <For
                 each={watchlistedJobs()}
                 fallback={
                   <tr>
-                    <td colspan="8" class="text-center py-16">
+                    <td colspan="7" class="text-center py-16">
                       <p class="text-[13px] text-mk-tertiary">No saved jobs</p>
                       <p class="text-[12px] text-mk-tertiary/60 mt-1">Star a job to add it here.</p>
                     </td>
@@ -195,7 +195,6 @@ export default function WatchlistView(props: WatchlistViewProps) {
                     <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                     <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                     <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                    <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.company || "-"}</span></td>
                     <td class="text-center py-2.5">
                       <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                     </td>
