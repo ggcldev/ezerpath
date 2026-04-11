@@ -44,14 +44,29 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function plainTextToHtml(value: string): string {
-  const escaped = escapeHtml(value.trim());
-  if (!escaped) return "";
-  return escaped
-    .replace(/\r\n/g, "\n")
-    .split(/\n{2,}/)
-    .map((block) => `<p>${block.replace(/\n/g, "<br>")}</p>`)
+function plainTextToSimpleHtml(value: string): string {
+  const text = value.replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+
+  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  return paragraphs
+    .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
     .join("");
+}
+
+function buildDescriptionHtml(crawled: CrawledJobDetails | null, fallbackSummary: string): string {
+  const rawHtml = (crawled?.description_html || "").trim();
+  const rawText = (crawled?.description || fallbackSummary || "").trim();
+
+  if (rawHtml) {
+    return sanitizeDescriptionHtml(rawHtml);
+  }
+
+  if (rawText) {
+    return sanitizeDescriptionHtml(plainTextToSimpleHtml(rawText));
+  }
+
+  return "<p>No description available from the listing preview.</p>";
 }
 
 function sanitizeDescriptionHtml(raw: string): string {
@@ -211,10 +226,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
                   fallback={<p class="text-[13px] leading-6 text-mk-secondary">Loading full job description...</p>}
                 >
                   {() => {
-                    const html = sanitizeDescriptionHtml(
-                      crawled()?.description_html ||
-                      plainTextToHtml(crawled()?.description || job().summary || "No description available from the listing preview.")
-                    );
+                    const html = buildDescriptionHtml(crawled(), job().summary);
                     return (
                       <div
                         class="job-description-content text-[13px] text-mk-secondary [overflow-wrap:anywhere]"
