@@ -204,6 +204,19 @@ select:focus-visible {
   line-height: 1.72;
 }
 
+.job-description-content .jd-meta-line {
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.job-description-content .jd-section-title {
+  margin: 0.4rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  font-weight: 700;
+  color: var(--mk-text);
+}
+
 .job-description-content ul,
 .job-description-content ol {
   margin: 0.2rem 0 0;
