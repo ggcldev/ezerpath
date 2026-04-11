@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { Building2, CalendarDays, ExternalLink, Tag, Wallet, X } from "lucide-solid";
+import { Building2, CalendarDays, Copy, ExternalLink, Tag, Wallet, X } from "lucide-solid";
 
 interface JobDetails {
   title: string;
@@ -69,6 +69,104 @@ function buildDescriptionHtml(crawled: CrawledJobDetails | null, fallbackSummary
   return "<p>No description available from the listing preview.</p>";
 }
 
+function htmlToPlainText(raw: string): string {
+  if (!raw) return "";
+  if (typeof document === "undefined") {
+    return raw
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|h1|h2|h3|h4|h5|h6|blockquote|pre)>/gi, "\n\n")
+      .replace(/<li[^>]*>/gi, "\n- ")
+      .replace(/<\/li>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim();
+  }
+
+  const root = document.createElement("div");
+  root.innerHTML = raw;
+  const out: string[] = [];
+
+  const push = (text: string) => {
+    if (!text) return;
+    out.push(text);
+  };
+
+  const walkInline = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return (node.textContent || "");
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node as HTMLElement;
+    if (el.tagName === "BR") return "\n";
+    return Array.from(el.childNodes).map(walkInline).join("");
+  };
+
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = (node.textContent || "").replace(/\s+/g, " ");
+      push(text);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === "br") {
+      push("\n");
+      return;
+    }
+    if (tag === "ul") {
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() !== "li") continue;
+        const itemText = walkInline(child).replace(/\s+/g, " ").trim();
+        if (itemText) push(`- ${itemText}\n`);
+      }
+      push("\n");
+      return;
+    }
+    if (tag === "ol") {
+      let index = 1;
+      for (const child of Array.from(el.children)) {
+        if (child.tagName.toLowerCase() !== "li") continue;
+        const itemText = walkInline(child).replace(/\s+/g, " ").trim();
+        if (itemText) push(`${index}. ${itemText}\n`);
+        index += 1;
+      }
+      push("\n");
+      return;
+    }
+    if (tag === "li") {
+      const itemText = walkInline(el).replace(/\s+/g, " ").trim();
+      if (itemText) push(`- ${itemText}\n`);
+      return;
+    }
+
+    const blockTags = new Set(["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre"]);
+    if (blockTags.has(tag)) {
+      const text = walkInline(el).replace(/\s+/g, " ").trim();
+      if (text) push(`${text}\n\n`);
+      return;
+    }
+
+    for (const child of Array.from(el.childNodes)) {
+      walk(child);
+    }
+  };
+
+  for (const child of Array.from(root.childNodes)) {
+    walk(child);
+  }
+
+  return out
+    .join("")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 function sanitizeDescriptionHtml(raw: string): string {
   if (typeof document === "undefined") return raw;
   const parser = new DOMParser();
@@ -120,6 +218,7 @@ function sanitizeDescriptionHtml(raw: string): string {
 export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
   const [crawled, setCrawled] = createSignal<CrawledJobDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = createSignal(false);
+  const [copied, setCopied] = createSignal(false);
 
   createEffect(() => {
     if (!props.job) return;
@@ -161,6 +260,45 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
     });
   });
 
+  const copyJobContext = async () => {
+    const job = props.job;
+    if (!job) return;
+    const renderedHtml = buildDescriptionHtml(crawled(), job.summary);
+    const descriptionText = htmlToPlainText(renderedHtml);
+    const text = [
+      `Job Title: ${job.title || "-"}`,
+      `Company: ${crawled()?.company || job.company || "-"}`,
+      `Source: ${job.source || "-"}`,
+      `Posted: ${formatPosted(job.posted_at)}`,
+      `Pay: ${job.pay || "-"}`,
+      `Keyword: ${job.keyword || "-"}`,
+      `URL: ${job.url || "-"}`,
+      "",
+      "Description:",
+      descriptionText || "-",
+    ].join("\n");
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        document.body.removeChild(area);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  };
+
   return (
     <Show when={props.job}>
       {(job) => (
@@ -169,7 +307,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Job Snapshot</p>
-                <h3 class="mt-1 text-[15px] font-semibold text-mk-text leading-snug break-words">{job().title}</h3>
+                <h3 class="mt-1 text-[19px] font-semibold text-mk-text leading-snug break-words">{job().title}</h3>
               </div>
               <button
                 class="shrink-0 p-1 rounded-md text-mk-tertiary hover:text-mk-text hover:bg-mk-fill transition-all"
@@ -179,7 +317,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
                 <X class="w-4 h-4" />
               </button>
             </div>
-            <div class="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+            <div class="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
               <span class="inline-flex items-center gap-1 text-mk-secondary">
                 <CalendarDays class="w-3.5 h-3.5 text-mk-tertiary" />
                 {formatPosted(job().posted_at)}
@@ -213,23 +351,23 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
                 />
               </Show>
               <div class="min-w-0">
-                <p class="text-[13px] font-semibold text-mk-text truncate">{crawled()?.company || job().company || "Unknown company"}</p>
-                <p class="text-[11px] text-mk-tertiary">{job().source}</p>
+                <p class="text-[15px] font-semibold text-mk-text truncate">{crawled()?.company || job().company || "Unknown company"}</p>
+                <p class="text-[13px] text-mk-tertiary">{job().source}</p>
               </div>
             </div>
 
             <div>
-              <p class="text-[11px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2">Description</p>
+              <p class="text-[13px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2">Description</p>
               <div class="max-w-[68ch] pr-2">
                 <Show
                   when={!loadingDetails()}
-                  fallback={<p class="text-[13px] leading-6 text-mk-secondary">Loading full job description...</p>}
+                  fallback={<p class="text-[15px] leading-8 text-mk-secondary">Loading full job description...</p>}
                 >
                   {() => {
                     const html = buildDescriptionHtml(crawled(), job().summary);
                     return (
                       <div
-                        class="job-description-content text-[13px] text-mk-secondary [overflow-wrap:anywhere]"
+                        class="job-description-content text-[15px] text-mk-secondary [overflow-wrap:anywhere]"
                         innerHTML={html || "<p>No description available.</p>"}
                       />
                     );
@@ -241,18 +379,27 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
 
           <div class="px-5 py-3 border-t border-mk-separator flex items-center justify-between">
             <button
-              class="text-[12px] font-medium text-mk-tertiary hover:text-mk-text transition-colors"
+              class="text-[14px] font-medium text-mk-tertiary hover:text-mk-text transition-colors"
               onClick={props.onClose}
             >
               Close
             </button>
-            <button
-              class="inline-flex items-center gap-1 text-[12px] font-semibold text-mk-cyan hover:opacity-80 transition-opacity"
-              onClick={() => props.onOpenUrl(job().url)}
-            >
-              Open full listing
-              <ExternalLink class="w-3.5 h-3.5" />
-            </button>
+            <div class="flex items-center gap-3">
+              <button
+                class="inline-flex items-center gap-1 text-[13px] font-medium text-mk-secondary hover:text-mk-text transition-colors"
+                onClick={copyJobContext}
+              >
+                <Copy class="w-3.5 h-3.5" />
+                {copied() ? "Copied" : "Copy context"}
+              </button>
+              <button
+                class="inline-flex items-center gap-1 text-[14px] font-semibold text-mk-cyan hover:opacity-80 transition-opacity"
+                onClick={() => props.onOpenUrl(job().url)}
+              >
+                Open full listing
+                <ExternalLink class="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         </aside>
       )}
