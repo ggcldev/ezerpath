@@ -1,9 +1,12 @@
-import { createSignal, createMemo, For, Show, Resource, onCleanup } from "solid-js";
+import { createSignal, createMemo, For, Show, Resource, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
 import AnimatedNumber from "../components/AnimatedNumber";
+import JobDetailsDrawer from "../components/JobDetailsDrawer";
 import { filterJobsByScope, getLatestRunId, latestRunCount as calcLatestRunCount } from "../utils/jobs";
+import { rowHoverEnter, rowHoverLeave } from "../utils/fluidHover";
+import { animateViewEnter } from "../utils/viewMotion";
 
 interface Job {
   id: number;
@@ -11,6 +14,7 @@ interface Job {
   source_id: string;
   title: string;
   company: string;
+  company_logo_url: string;
   pay: string;
   posted_at: string;
   url: string;
@@ -41,7 +45,7 @@ function formatDate(raw: string): string {
 }
 
 const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [96, 220, 110, 80, 100, 56];
+const DEFAULT_WIDTHS = [96, 340, 110, 80, 100, 56];
 const STAR_W = 32;
 const GROUP_INDENT_W = 14;
 const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
@@ -100,9 +104,11 @@ export default function JobsView(props: JobsViewProps) {
   const [selectedPayRange, setSelectedPayRange] = createSignal<PayRangeKey>("all");
   const [selectedScanScope, setSelectedScanScope] = createSignal<ScanScopeKey>("all");
   const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
+  const [selectedJob, setSelectedJob] = createSignal<Job | null>(null);
 
   let headerEl!: HTMLDivElement;
   let bodyEl!: HTMLDivElement;
+  let viewEl!: HTMLDivElement;
   let drag = { active: false, i: 0, startX: 0, startW: 0 };
 
   const leadColWidth = () => STAR_W + (selectedKeyword() === null ? GROUP_INDENT_W : 0);
@@ -234,8 +240,12 @@ export default function JobsView(props: JobsViewProps) {
     void getCurrentWindow().startDragging();
   };
 
+  onMount(() => {
+    animateViewEnter(viewEl);
+  });
+
   return (
-    <div class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
+    <div ref={viewEl!} class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
 
       <div class="h-8 shrink-0" onMouseDown={handleWindowDrag} />
 
@@ -251,7 +261,7 @@ export default function JobsView(props: JobsViewProps) {
       </Show>
 
       {/* Main content: keyword panel + table */}
-      <div class="flex flex-1 min-h-0">
+      <div class="relative flex flex-1 min-h-0">
 
         {/* Keyword side panel */}
         <div class="w-44 md:w-52 shrink-0 flex flex-col border-r border-mk-separator py-3">
@@ -443,15 +453,18 @@ export default function JobsView(props: JobsViewProps) {
                           <For each={group.jobs}>
                             {(job, rowIndex) => (
                               <tr
-                                class={`table-row border-b border-mk-separator/50 hover:bg-mk-row-hover ${
+                                class={`table-row cursor-pointer border-b border-mk-separator/50 hover:bg-mk-row-hover ${
                                   rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
                                 }`}
+                                onClick={() => setSelectedJob(job)}
+                                onMouseEnter={(e) => rowHoverEnter(e.currentTarget)}
+                                onMouseLeave={(e) => rowHoverLeave(e.currentTarget)}
                               >
                                 <td class={`text-center py-2.5 ${selectedKeyword() === null ? "pl-3" : ""}`}>
                                   <button
                                     class={`text-[15px] leading-none transition-colors ${job.watchlisted ? "text-mk-yellow" : "text-mk-tertiary hover:text-mk-yellow"}`}
                                     aria-label={job.watchlisted ? "Remove from watchlist" : "Add to watchlist"}
-                                    onClick={() => props.onToggleWatchlist(job.id)}
+                                    onClick={(e) => { e.stopPropagation(); props.onToggleWatchlist(job.id); }}
                                   >{job.watchlisted ? "\u2605" : "\u2606"}</button>
                                 </td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
@@ -465,7 +478,7 @@ export default function JobsView(props: JobsViewProps) {
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden">
-                                  <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
+                                  <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={(e) => { e.stopPropagation(); openUrl(job.url); }}>Open</button>
                                 </td>
                               </tr>
                             )}
@@ -480,6 +493,18 @@ export default function JobsView(props: JobsViewProps) {
           </div>
 
         </div>
+        <Show when={selectedJob()}>
+          <button
+            class="absolute inset-0 z-20 bg-black/20 backdrop-blur-[2px] animate-overlay-in"
+            aria-label="Close job details"
+            onClick={() => setSelectedJob(null)}
+          />
+        </Show>
+        <JobDetailsDrawer
+          job={selectedJob()}
+          onClose={() => setSelectedJob(null)}
+          onOpenUrl={openUrl}
+        />
       </div>
     </div>
   );

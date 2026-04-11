@@ -1,10 +1,11 @@
-import { createSignal, For, Show, Accessor, Resource, Setter } from "solid-js";
+import { createSignal, For, Show, Accessor, Resource, Setter, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X } from "lucide-solid";
 import toast from "solid-toast";
 import AnimatedNumber from "../components/AnimatedNumber";
 import { runMutation } from "../utils/mutations";
+import { animateViewEnter } from "../utils/viewMotion";
 
 interface CrawlStats {
   keyword: string;
@@ -29,6 +30,7 @@ interface ScanViewProps {
 
 export default function ScanView(props: ScanViewProps) {
   const [newKeyword, setNewKeyword] = createSignal("");
+  let viewEl!: HTMLDivElement;
   const handleWindowDrag = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;
     if (target?.closest("button,input,a,textarea,select,[role='button']")) return;
@@ -90,8 +92,12 @@ export default function ScanView(props: ScanViewProps) {
   const totalNew = () => props.crawlResult()?.reduce((sum, s) => sum + s.new, 0) ?? 0;
   const totalFound = () => props.crawlResult()?.reduce((sum, s) => sum + s.found, 0) ?? 0;
 
+  onMount(() => {
+    animateViewEnter(viewEl);
+  });
+
   return (
-    <div class="flex-1 flex flex-col bg-mk-bg">
+    <div ref={viewEl!} class="flex-1 flex flex-col bg-mk-bg">
       <div
         class="app-titlebar shrink-0"
         onMouseDown={handleWindowDrag}

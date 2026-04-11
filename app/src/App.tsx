@@ -15,6 +15,7 @@ interface Job {
   source_id: string;
   title: string;
   company: string;
+  company_logo_url: string;
   pay: string;
   posted_at: string;
   url: string;

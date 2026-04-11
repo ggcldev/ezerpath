@@ -48,6 +48,7 @@ A lightweight, cross-platform job hunting app that crawls job boards, organizes 
 - [ ] Date filtering — only show jobs from the last N days
 - [ ] Dedup — track previously seen jobs, highlight new ones
 - [ ] Auto-crawl scheduler — daily scan at a set time
+- [ ] Background new-job monitor + desktop notifications — detect newly posted jobs and show OS-level toast/notification even when app window is minimized (macOS + Windows)
 
 ### AI-Powered
 
@@ -87,6 +88,47 @@ A lightweight, cross-platform job hunting app that crawls job boards, organizes 
 - [ ] Crawl-on-demand button
 - [ ] Auto-crawl scheduler (background task)
 - [ ] Filter/sort by keyword, date, pay, new/seen
+- [ ] Minimized app notifier — run background scan checks and fire "New job posted" notifications with quick-open action
+
+### Phase 2.1 — Background Monitoring & Notifications (Detailed Plan)
+- [ ] Notification permission flow (desktop)
+  - [ ] Add first-run permission prompt for notifications
+  - [ ] Add settings toggle: `Enable desktop notifications`
+  - [ ] Add settings toggle: `Notify only for new jobs (not updated jobs)`
+- [ ] Background monitor service (Rust)
+  - [ ] Create monitor loop that runs while app is open/minimized
+  - [ ] Add configurable polling interval (default: every 5 minutes)
+  - [ ] Respect crawl lock to avoid overlapping scans
+  - [ ] Exponential backoff on crawl/network failures
+- [ ] New-job detection logic (SQLite)
+  - [ ] Store `last_notified_at` per job or per scan run
+  - [ ] Notify only once per unique job id
+  - [ ] Track `new_since_last_check` count for badge/toast summary
+- [ ] Notification delivery (Tauri desktop)
+  - [ ] Integrate Tauri notification API for macOS/Windows toasts
+  - [ ] Notification payload: title, company, keyword, posted time
+  - [ ] Add click action: open app + focus `All Jobs` + highlight latest new jobs
+  - [ ] Add action button (if supported): `Open Job`
+- [ ] UI integration (SolidJS)
+  - [ ] Add monitor status indicator (idle/checking/error) in sidebar
+  - [ ] Add unread new-jobs badge near `All Jobs`
+  - [ ] Add settings panel for interval and notification preferences
+- [ ] Noise control / anti-spam
+  - [ ] Bundle multiple new jobs into one summary toast when count > threshold
+  - [ ] Cooldown window to prevent repeated alerts (ex: max 1 summary / 2 min)
+  - [ ] Quiet hours option (optional, phase 2.2)
+- [ ] Platform-specific QA
+  - [ ] Test minimized-window notifications on macOS
+  - [ ] Test minimized-window notifications on Windows
+  - [ ] Validate behavior when app regains focus after notification click
+- [ ] Telemetry/logging (local-only)
+  - [ ] Log monitor runs, detected counts, notification dispatch outcome
+  - [ ] Add debug view/export for troubleshooting notification failures
+- [ ] Acceptance criteria
+  - [ ] User receives desktop toast for newly detected jobs while app is minimized
+  - [ ] Clicking toast reliably opens app and lands on relevant new jobs context
+  - [ ] No duplicate notifications for the same job
+  - [ ] Monitor loop stays lightweight and does not block normal UI usage
 
 ### Phase 3 — AI Integration
 - [ ] Claude API integration in Rust

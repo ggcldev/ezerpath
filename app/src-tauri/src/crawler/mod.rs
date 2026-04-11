@@ -1,11 +1,13 @@
 use crate::db::{Database, Job};
 use chrono::Utc;
 use reqwest::Client;
+use reqwest::Url;
 use scraper::{Html, Selector};
 use std::sync::Arc;
 use std::time::Duration;
 
 const BASE_URL: &str = "https://www.onlinejobs.ph/jobseekers/jobsearch";
+const SITE_BASE: &str = "https://www.onlinejobs.ph";
 const CRAWL_DELAY: Duration = Duration::from_secs(5);
 const MAX_PAGES: usize = 5;
 
@@ -80,6 +82,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
     let pay_sel  = Selector::parse("dl.no-gutters dd").map_err(|e| e.to_string())?;
     let desc_sel = Selector::parse(".desc").map_err(|e| e.to_string())?;
     let logo_sel = Selector::parse(".jobpost-cat-box-logo").map_err(|e| e.to_string())?;
+    let logo_img_sel = Selector::parse(".jobpost-cat-box-logo img").map_err(|e| e.to_string())?;
     let link_sel = Selector::parse("a").map_err(|e| e.to_string())?;
 
     let now = Utc::now().to_rfc3339();
@@ -101,11 +104,24 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             .unwrap_or_default()
             .replace("Posted on ", "");
 
-        let company = card.select(&logo_sel)
+        let company = card.select(&logo_img_sel)
             .next()
             .and_then(|e| e.value().attr("alt"))
+            .or_else(|| card.select(&logo_sel).next().and_then(|e| e.value().attr("alt")))
             .unwrap_or("")
             .to_string();
+
+        let company_logo_url = card
+            .select(&logo_img_sel)
+            .next()
+            .and_then(|e| {
+                e.value()
+                    .attr("src")
+                    .or_else(|| e.value().attr("data-src"))
+                    .or_else(|| e.value().attr("srcset").and_then(|s| s.split(',').next().and_then(|p| p.split_whitespace().next())))
+            })
+            .map(normalize_asset_url)
+            .unwrap_or_default();
 
         let pay = card.select(&pay_sel)
             .next()
@@ -156,6 +172,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             source_id,
             title,
             company,
+            company_logo_url,
             pay,
             posted_at,
             url,
@@ -182,6 +199,25 @@ fn is_allowed_job_url(url: &str) -> bool {
         parsed.host_str(),
         Some("onlinejobs.ph") | Some("www.onlinejobs.ph")
     )
+}
+
+fn normalize_asset_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Ok(parsed) = Url::parse(trimmed) {
+        return parsed.to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("//") {
+        return format!("https://{rest}");
+    }
+    if let Ok(base) = Url::parse(SITE_BASE) {
+        if let Ok(joined) = base.join(trimmed) {
+            return joined.to_string();
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]

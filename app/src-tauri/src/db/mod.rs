@@ -11,6 +11,7 @@ pub struct Job {
     pub source_id: String,
     pub title: String,
     pub company: String,
+    pub company_logo_url: String,
     pub pay: String,
     pub posted_at: String,
     pub url: String,
@@ -54,6 +55,7 @@ impl Database {
                 source_id   TEXT NOT NULL,
                 title       TEXT NOT NULL,
                 company     TEXT DEFAULT '',
+                company_logo_url TEXT DEFAULT '',
                 pay         TEXT DEFAULT '',
                 posted_at   TEXT DEFAULT '',
                 url         TEXT NOT NULL,
@@ -90,6 +92,8 @@ impl Database {
 
         // Migration: add run_id to jobs if not yet present (ignore error if already exists)
         conn.execute_batch("ALTER TABLE jobs ADD COLUMN run_id INTEGER REFERENCES runs(id);").ok();
+        // Migration: add company logo URL if not yet present.
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN company_logo_url TEXT DEFAULT '';").ok();
         // Migration: add run lifecycle fields if not yet present.
         conn.execute_batch("ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';").ok();
         conn.execute_batch("ALTER TABLE runs ADD COLUMN error_message TEXT;").ok();
@@ -164,10 +168,10 @@ impl Database {
     pub fn insert_job(&self, job: &Job, run_id: i64) -> Result<bool, rusqlite::Error> {
         let conn = self.conn()?;
         let inserted = conn.execute(
-            "INSERT OR IGNORE INTO jobs (source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR IGNORE INTO jobs (source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
-                job.source, job.source_id, job.title, job.company, job.pay,
+                job.source, job.source_id, job.title, job.company, job.company_logo_url, job.pay,
                 job.posted_at, job.url, job.summary, job.keyword, job.scraped_at,
                 job.is_new as i32, run_id,
             ],
@@ -182,18 +186,20 @@ impl Database {
             "UPDATE jobs
              SET title = ?1,
                  company = ?2,
-                 pay = ?3,
-                 posted_at = ?4,
-                 url = ?5,
-                 summary = ?6,
-                 keyword = ?7,
-                 scraped_at = ?8,
+                 company_logo_url = ?3,
+                 pay = ?4,
+                 posted_at = ?5,
+                 url = ?6,
+                 summary = ?7,
+                 keyword = ?8,
+                 scraped_at = ?9,
                  is_new = 0,
-                 run_id = ?9
-             WHERE source = ?10 AND source_id = ?11",
+                 run_id = ?10
+             WHERE source = ?11 AND source_id = ?12",
             params![
                 job.title,
                 job.company,
+                job.company_logo_url,
                 job.pay,
                 job.posted_at,
                 job.url,
@@ -212,7 +218,7 @@ impl Database {
     pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut query = String::from(
-            "SELECT id, source, source_id, title, company, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id
              FROM jobs WHERE 1=1"
         );
         let mut bind_values: Vec<Value> = Vec::new();
@@ -282,15 +288,16 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         source_id: row.get(2)?,
         title: row.get(3)?,
         company: row.get(4)?,
-        pay: row.get(5)?,
-        posted_at: row.get(6)?,
-        url: row.get(7)?,
-        summary: row.get(8)?,
-        keyword: row.get(9)?,
-        scraped_at: row.get(10)?,
-        is_new: row.get::<_, i32>(11)? != 0,
-        watchlisted: row.get::<_, i32>(12)? != 0,
-        run_id: row.get(13)?,
+        company_logo_url: row.get(5)?,
+        pay: row.get(6)?,
+        posted_at: row.get(7)?,
+        url: row.get(8)?,
+        summary: row.get(9)?,
+        keyword: row.get(10)?,
+        scraped_at: row.get(11)?,
+        is_new: row.get::<_, i32>(12)? != 0,
+        watchlisted: row.get::<_, i32>(13)? != 0,
+        run_id: row.get(14)?,
     })
 }
 
@@ -307,6 +314,7 @@ mod tests {
             source_id: source_id.to_string(),
             title: "SEO Specialist".to_string(),
             company: "Acme".to_string(),
+            company_logo_url: "https://www.onlinejobs.ph/example-logo.png".to_string(),
             pay: "$8/hr".to_string(),
             posted_at: "2026-04-10T00:00:00Z".to_string(),
             url: format!("https://www.onlinejobs.ph/jobseekers/job/{source_id}"),
