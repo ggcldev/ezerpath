@@ -1,6 +1,6 @@
 import { For, Show, Resource, type Component } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { CirclePlus, List, Moon, Star, Sun, Trash2 } from "lucide-solid";
+import { CirclePlus, List, Settings2, Star, Trash2 } from "lucide-solid";
 
 export type View = "scan" | "jobs" | "watchlist";
 
@@ -18,6 +18,7 @@ interface SidebarProps {
   crawling: boolean;
   dark: boolean;
   onToggleTheme: () => void;
+  onOpenSettings: () => void;
   runs: Resource<ScanRun[]>;
   onRequestDeleteRun: (run: ScanRun) => void;
   onRequestClearAll: () => void;
@@ -144,25 +145,16 @@ export default function Sidebar(props: SidebarProps) {
         </div>
       </div>
 
-      {/* Theme toggle */}
-      <div class="px-4 py-3 border-t border-mk-sidebar-sep flex items-center justify-center shrink-0">
+      {/* Footer controls */}
+      <div class="px-4 py-3 border-t border-mk-sidebar-sep flex items-center justify-start gap-2 shrink-0">
         <button
-          class="relative flex items-center w-12 h-6 rounded-full transition-colors duration-200 focus:outline-none"
-          style={{ background: props.dark ? "var(--mk-green)" : "rgba(0,0,0,0.28)" }}
-          onClick={props.onToggleTheme}
-          title={props.dark ? "Switch to light" : "Switch to dark"}
-          aria-label={props.dark ? "Switch to light theme" : "Switch to dark theme"}
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-medium text-mk-sidebar-secondary hover:text-mk-sidebar-txt hover:bg-mk-sidebar-hover transition-colors"
+          onClick={props.onOpenSettings}
+          title="Open preferences"
+          aria-label="Open preferences"
         >
-          <span class="absolute left-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
-            <Sun class="w-3.5 h-3.5" />
-          </span>
-          <span class="absolute right-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
-            <Moon class="w-3.5 h-3.5" />
-          </span>
-          <span
-            class="absolute w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200"
-            style={{ transform: props.dark ? "translateX(24px)" : "translateX(2px)" }}
-          />
+          <Settings2 class="w-4 h-4" />
+          <span>Preferences</span>
         </button>
       </div>
     </aside>

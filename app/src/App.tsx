@@ -2,6 +2,7 @@ import { createSignal, createResource, createEffect, onCleanup, Match, Switch, S
 import { invoke } from "@tauri-apps/api/core";
 import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ConfirmModal from "./components/ConfirmModal";
+import SettingsPanel from "./components/SettingsPanel";
 import ScanView from "./views/ScanView";
 import JobsView from "./views/JobsView";
 import WatchlistView from "./views/WatchlistView";
@@ -53,6 +54,7 @@ function App() {
   const [globalError, setGlobalError] = createSignal("");
   const [confirmDialog, setConfirmDialog] = createSignal<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = createSignal(false);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
 
   const toggleTheme = () => {
     setDark((v) => !v);
@@ -170,6 +172,7 @@ function App() {
         crawling={crawling()}
         dark={dark()}
         onToggleTheme={toggleTheme}
+        onOpenSettings={() => setSettingsOpen(true)}
         runs={runs}
         onRequestDeleteRun={requestDeleteRun}
         onRequestClearAll={requestClearAll}
@@ -225,6 +228,12 @@ function App() {
         busy={confirmBusy()}
         onCancel={() => !confirmBusy() && setConfirmDialog(null)}
         onConfirm={handleConfirmModal}
+      />
+      <SettingsPanel
+        open={settingsOpen()}
+        dark={dark()}
+        onToggleTheme={toggleTheme}
+        onClose={() => setSettingsOpen(false)}
       />
       <Toaster
         position="top-right"

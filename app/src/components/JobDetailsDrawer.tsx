@@ -22,6 +22,7 @@ interface JobDetailsDrawerProps {
 
 interface CrawledJobDetails {
   company: string;
+  poster_name: string;
   company_logo_url: string;
   description: string;
   description_html: string;
@@ -268,6 +269,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
     const text = [
       `Job Title: ${job.title || "-"}`,
       `Company: ${crawled()?.company || job.company || "-"}`,
+      `Posted By: ${crawled()?.poster_name || "-"}`,
       `Source: ${job.source || "-"}`,
       `Posted: ${formatPosted(job.posted_at)}`,
       `Pay: ${job.pay || "-"}`,
@@ -352,7 +354,9 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
               </Show>
               <div class="min-w-0">
                 <p class="text-[15px] font-semibold text-mk-text truncate">{crawled()?.company || job().company || "Unknown company"}</p>
-                <p class="text-[13px] text-mk-tertiary">{job().source}</p>
+                <p class="text-[13px] text-mk-tertiary">
+                  {crawled()?.poster_name ? `Posted by ${crawled()?.poster_name}` : job().source}
+                </p>
               </div>
             </div>
 

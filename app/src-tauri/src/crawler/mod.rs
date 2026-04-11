@@ -20,6 +20,7 @@ pub struct Crawler {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobDetailsPayload {
     pub company: String,
+    pub poster_name: String,
     pub company_logo_url: String,
     pub description: String,
     pub description_html: String,
@@ -217,12 +218,17 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
         ".company-name, [class*='company-name'], [class*='job-company'], [class*='employer-name']",
     )
     .map_err(|e| e.to_string())?;
+    let poster_sel = Selector::parse(
+        ".job-poster-name, [class*='poster-name'], [class*='hired-by'], [class*='employer-name'], [class*='client-name']",
+    )
+    .map_err(|e| e.to_string())?;
     let logo_sel = Selector::parse(
         ".company img, [class*='company'] img, [class*='employer'] img, [class*='client'] img",
     )
     .map_err(|e| e.to_string())?;
 
     let mut company = String::new();
+    let mut poster_name = String::new();
     let mut company_logo_url = String::new();
     let mut description = String::new();
     let mut description_html = String::new();
@@ -233,12 +239,21 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-            extract_jsonld_fields(&value, &mut company, &mut company_logo_url, &mut description);
+            extract_jsonld_fields(
+                &value,
+                &mut company,
+                &mut poster_name,
+                &mut company_logo_url,
+                &mut description,
+            );
         }
     }
 
     if company.is_empty() {
         company = extract_best_text(&doc, &company_sel);
+    }
+    if poster_name.is_empty() {
+        poster_name = extract_best_text(&doc, &poster_sel);
     }
     if company_logo_url.is_empty() {
         company_logo_url = doc
@@ -270,6 +285,7 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
 
     Ok(JobDetailsPayload {
         company,
+        poster_name,
         company_logo_url,
         description,
         description_html,
@@ -279,6 +295,7 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
 fn extract_jsonld_fields(
     value: &Value,
     company: &mut String,
+    poster_name: &mut String,
     company_logo_url: &mut String,
     description: &mut String,
 ) {
@@ -299,6 +316,18 @@ fn extract_jsonld_fields(
                 if let Some(logo) = find_first_key_string(hiring_org, "logo") {
                     *company_logo_url = normalize_asset_url(&logo);
                 }
+            }
+        }
+    }
+
+    if poster_name.is_empty() {
+        if let Some(author) = find_first_key(value, "author") {
+            if let Some(name) = find_first_key_string(author, "name") {
+                *poster_name = normalize_text(&name);
+            }
+        } else if let Some(posted_by) = find_first_key(value, "postedBy") {
+            if let Some(name) = find_first_key_string(posted_by, "name") {
+                *poster_name = normalize_text(&name);
             }
         }
     }
