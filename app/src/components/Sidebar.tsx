@@ -54,9 +54,9 @@ export default function Sidebar(props: SidebarProps) {
       />
 
       {/* New Scan button */}
-      <div class="px-3 mb-5">
+      <div class="px-3 mb-4">
         <button
-          class={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[13px] font-semibold transition-all active:scale-[0.97] ${
+          class={`hover-lift w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[13px] font-semibold transition-all active:scale-[0.97] ${
             props.crawling
               ? "opacity-40 cursor-not-allowed bg-mk-green text-mk-sidebar"
               : "bg-mk-green text-mk-sidebar hover:bg-mk-green-hover shadow-sm"
@@ -80,7 +80,7 @@ export default function Sidebar(props: SidebarProps) {
             {(item) => (
               <li>
                 <button
-                  class={`w-full text-left px-2.5 py-[5px] rounded-md text-[13px] transition-all ${
+                  class={`sidebar-nav-item w-full text-left px-2.5 py-[5px] text-[12px] transition-all ${
                     props.currentView === item.id
                       ? "bg-mk-sidebar-active-bg text-mk-sidebar-active-txt font-medium"
                       : "text-mk-sidebar-secondary hover:bg-mk-sidebar-hover hover:text-mk-sidebar-txt"
@@ -99,7 +99,7 @@ export default function Sidebar(props: SidebarProps) {
       </nav>
 
       {/* Scan History */}
-      <div class="px-2.5 mt-6 flex-1 flex flex-col min-h-0">
+      <div class="px-2.5 mt-5 flex-1 flex flex-col min-h-0">
         <div class="flex items-center justify-between px-2.5 mb-1.5">
           <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-sidebar-tertiary">Scan History</p>
           <button
@@ -111,7 +111,7 @@ export default function Sidebar(props: SidebarProps) {
             Clear all
           </button>
         </div>
-        <div class="flex-1 overflow-y-auto space-y-px">
+        <div class="flex-1 overflow-y-auto space-y-0.5">
           <Show
             when={(props.runs() ?? []).length > 0}
             fallback={

@@ -1,7 +1,6 @@
 import { createSignal, For, Show, Resource, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import AnimatedNumber from "../components/AnimatedNumber";
 
 interface Job {
   id: number;
@@ -33,11 +32,10 @@ function formatDate(raw: string): string {
 }
 
 const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 56];
+const DEFAULT_WIDTHS = [96, 220, 110, 80, 100, 56];
 const STAR_W = 32;
 
 export default function WatchlistView(props: WatchlistViewProps) {
-  const [filter, setFilter] = createSignal("");
   const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
 
   let headerEl!: HTMLDivElement;
@@ -45,6 +43,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
   let drag = { active: false, i: 0, startX: 0, startW: 0 };
 
   const totalWidth = () => widths().reduce((a, b) => a + b, 0) + STAR_W;
+  const stretchedWidth = () => `max(100%, ${totalWidth()}px)`;
 
   const onBodyScroll = () => { headerEl.scrollLeft = bodyEl.scrollLeft; };
 
@@ -79,14 +78,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
 
   const watchlistedJobs = () => {
     const list = (props.jobs() || []).filter((j) => j.watchlisted);
-    const q = filter().toLowerCase();
-    const filtered = q
-      ? list.filter((j) =>
-          j.title.toLowerCase().includes(q) ||
-          j.company.toLowerCase().includes(q) ||
-          j.keyword.toLowerCase().includes(q))
-      : list;
-    return [...filtered].sort((a, b) => {
+    return [...list].sort((a, b) => {
       const da = new Date(a.posted_at).getTime();
       const db = new Date(b.posted_at).getTime();
       return (isNaN(db) ? 0 : db) - (isNaN(da) ? 0 : da);
@@ -114,33 +106,24 @@ export default function WatchlistView(props: WatchlistViewProps) {
     <div class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
       {/* Titlebar */}
       <div
-        class="h-14 shrink-0 flex items-end px-3 sm:px-5 pb-0"
+        class="h-8 shrink-0"
         onMouseDown={handleWindowDrag}
-      >
-        <div class="flex items-center justify-between w-full">
-          <div class="flex items-baseline gap-2">
-            <h2 class="text-[15px] font-semibold text-mk-text">Watchlist</h2>
-            <AnimatedNumber value={watchlistedJobs().length} class="text-[12px] text-mk-tertiary" />
-          </div>
-          <input
-            class="w-40 sm:w-52 max-w-[48vw] px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
-            type="text" placeholder="Filter..."
-            value={filter()} onInput={(e) => setFilter(e.currentTarget.value)}
-          />
-        </div>
-      </div>
+      />
 
+      <div class="flex-1 flex flex-col min-h-0">
       {/* Fixed header — outside scroll area */}
-      <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-3" style={{ background: "var(--mk-bg)" }}>
-        <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: `${totalWidth()}px` }}>
+      <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-1" style={{ background: "var(--mk-grouped-bg)" }}>
+        <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: stretchedWidth() }}>
           {/* Star col */}
           <div style={{ width: `${STAR_W}px`, "min-width": `${STAR_W}px` }} />
           {/* Data cols */}
           <For each={COLS}>
             {(label, getI) => (
               <div
-                class="relative text-[11px] font-semibold text-mk-secondary uppercase tracking-wider px-2 select-none"
-                style={{ width: `${widths()[getI()]}px`, "min-width": `${widths()[getI()]}px` }}
+                class="relative text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider px-2 pr-4 select-none overflow-hidden whitespace-nowrap"
+                style={getI() === COLS.length - 1
+                  ? { "min-width": `${widths()[getI()]}px`, flex: "1 1 auto", "text-align": "left" }
+                  : { width: `${widths()[getI()]}px`, "min-width": `${widths()[getI()]}px`, "text-align": "left" }}
               >
                 {label}
                 <div
@@ -162,10 +145,14 @@ export default function WatchlistView(props: WatchlistViewProps) {
 
       {/* Scrollable body */}
       <div ref={bodyEl!} class="flex-1 min-w-0 overflow-auto px-3 sm:px-5" onScroll={onBodyScroll}>
-        <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: `${totalWidth()}px` }}>
+        <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: stretchedWidth() }}>
           <colgroup>
             <col style={{ width: `${STAR_W}px` }} />
-            <For each={widths()}>{(w) => <col style={{ width: `${w}px` }} />}</For>
+            <For each={widths()}>
+              {(w, i) => i() === widths().length - 1
+                ? <col />
+                : <col style={{ width: `${w}px` }} />}
+            </For>
           </colgroup>
           <tbody>
             <Show
@@ -185,7 +172,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
               >
                 {(job, rowIndex) => (
                   <tr
-                    class={`border-b border-mk-separator/50 hover:bg-mk-row-hover transition-colors ${
+                    class={`table-row border-b border-mk-separator/50 hover:bg-mk-row-hover ${
                       rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
                     }`}
                   >
@@ -201,8 +188,8 @@ export default function WatchlistView(props: WatchlistViewProps) {
                     <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                     <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                     <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                    <td class="text-center py-2.5">
-                      <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
+                    <td class="px-2 py-2.5 overflow-hidden">
+                      <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                     </td>
                   </tr>
                 )}
@@ -210,6 +197,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
             </Show>
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   );

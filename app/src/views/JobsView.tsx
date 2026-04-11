@@ -41,7 +41,7 @@ function formatDate(raw: string): string {
 }
 
 const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [80, 220, 110, 80, 100, 56];
+const DEFAULT_WIDTHS = [96, 220, 110, 80, 100, 56];
 const STAR_W = 32;
 const GROUP_INDENT_W = 14;
 const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
@@ -96,7 +96,6 @@ function getPayRangeKey(payRaw: string): Exclude<PayRangeKey, "all"> {
 }
 
 export default function JobsView(props: JobsViewProps) {
-  const [filter, setFilter] = createSignal("");
   const [selectedKeyword, setSelectedKeyword] = createSignal<string | null>(null);
   const [selectedPayRange, setSelectedPayRange] = createSignal<PayRangeKey>("all");
   const [selectedScanScope, setSelectedScanScope] = createSignal<ScanScopeKey>("all");
@@ -108,6 +107,7 @@ export default function JobsView(props: JobsViewProps) {
 
   const leadColWidth = () => STAR_W + (selectedKeyword() === null ? GROUP_INDENT_W : 0);
   const totalWidth = () => widths().reduce((a, b) => a + b, 0) + leadColWidth();
+  const stretchedWidth = () => `max(100%, ${totalWidth()}px)`;
   const onBodyScroll = () => { headerEl.scrollLeft = bodyEl.scrollLeft; };
 
   const onMove = (e: MouseEvent) => {
@@ -182,7 +182,6 @@ export default function JobsView(props: JobsViewProps) {
   // When a keyword is selected: flat filtered list. When All: grouped.
   const visibleJobs = createMemo(() => {
     const list = props.jobs() || [];
-    const q = filter().toLowerCase();
     const kw = selectedKeyword();
     const payRange = selectedPayRange();
     const scanScope = selectedScanScope();
@@ -193,12 +192,7 @@ export default function JobsView(props: JobsViewProps) {
     const base = payRange === "all"
       ? baseByKeyword
       : baseByKeyword.filter((j) => getPayRangeKey(j.pay) === payRange);
-    const searched = q
-      ? base.filter((j) =>
-          j.title.toLowerCase().includes(q) ||
-          j.company.toLowerCase().includes(q) ||
-          j.keyword.toLowerCase().includes(q))
-      : base;
+    const searched = base;
 
     if (kw) {
       // Flat sorted list for single keyword
@@ -243,23 +237,7 @@ export default function JobsView(props: JobsViewProps) {
   return (
     <div class="flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
 
-      {/* Titlebar */}
-      <div
-        class="h-14 shrink-0 flex items-end px-3 sm:px-5 pb-0"
-        onMouseDown={handleWindowDrag}
-      >
-        <div class="flex items-center justify-between w-full">
-          <div class="flex items-baseline gap-2">
-            <h2 class="text-[15px] font-semibold text-mk-text">All Jobs</h2>
-            <AnimatedNumber value={totalCount()} class="text-[12px] text-mk-tertiary" />
-          </div>
-          <input
-            class="w-40 sm:w-52 max-w-[48vw] px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
-            type="text" placeholder="Filter..."
-            value={filter()} onInput={(e) => setFilter(e.currentTarget.value)}
-          />
-        </div>
-      </div>
+      <div class="h-8 shrink-0" onMouseDown={handleWindowDrag} />
 
       {/* Scanning banner */}
       <Show when={props.crawling}>
@@ -398,14 +376,16 @@ export default function JobsView(props: JobsViewProps) {
         <div class="flex-1 flex flex-col min-h-0 min-w-0">
 
           {/* Fixed header */}
-          <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-3" style={{ background: "var(--mk-bg)" }}>
-            <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: `${totalWidth()}px` }}>
+          <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-1" style={{ background: "var(--mk-bg)" }}>
+            <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: stretchedWidth() }}>
               <div style={{ width: `${leadColWidth()}px`, "min-width": `${leadColWidth()}px` }} />
               <For each={COLS}>
                 {(label, getI) => (
                   <div
-                    class="relative text-[11px] font-semibold text-mk-secondary uppercase tracking-wider px-2 select-none"
-                    style={{ width: `${widths()[getI()]}px`, "min-width": `${widths()[getI()]}px` }}
+                    class="relative text-left text-[11px] font-semibold text-mk-secondary uppercase tracking-wider px-2 pr-4 select-none overflow-hidden whitespace-nowrap"
+                    style={getI() === COLS.length - 1
+                      ? { "min-width": `${widths()[getI()]}px`, flex: "1 1 auto", "text-align": "left" }
+                      : { width: `${widths()[getI()]}px`, "min-width": `${widths()[getI()]}px`, "text-align": "left" }}
                   >
                     {label}
                     <div
@@ -427,10 +407,14 @@ export default function JobsView(props: JobsViewProps) {
 
           {/* Scrollable body */}
           <div ref={bodyEl!} class="flex-1 min-w-0 overflow-auto px-3 sm:px-5" onScroll={onBodyScroll}>
-            <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: `${totalWidth()}px` }}>
+            <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: stretchedWidth() }}>
               <colgroup>
                 <col style={{ width: `${leadColWidth()}px` }} />
-                <For each={widths()}>{(w) => <col style={{ width: `${w}px` }} />}</For>
+                <For each={widths()}>
+                  {(w, i) => i() === widths().length - 1
+                    ? <col />
+                    : <col style={{ width: `${w}px` }} />}
+                </For>
               </colgroup>
               <tbody>
                 <Show
@@ -448,7 +432,7 @@ export default function JobsView(props: JobsViewProps) {
                           <Show when={selectedKeyword() === null}>
                             <tr>
                               <td colspan="7" style={{ padding: "0" }}>
-                                <div class="flex items-center gap-2 px-2 pt-4 pb-2" style={{ width: `${totalWidth()}px` }}>
+                                <div class="flex items-center gap-2 px-2 pt-4 pb-2" style={{ width: stretchedWidth() }}>
                                   <span class="text-[11px] font-semibold uppercase tracking-widest text-mk-cyan">{group.keyword}</span>
                                   <span class="text-[11px] text-mk-tertiary">{group.jobs.length}</span>
                                   <div class="flex-1 h-px" style={{ background: "var(--mk-separator)" }} />
@@ -459,7 +443,7 @@ export default function JobsView(props: JobsViewProps) {
                           <For each={group.jobs}>
                             {(job, rowIndex) => (
                               <tr
-                                class={`border-b border-mk-separator/50 hover:bg-mk-row-hover transition-colors ${
+                                class={`table-row border-b border-mk-separator/50 hover:bg-mk-row-hover ${
                                   rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
                                 }`}
                               >
@@ -480,8 +464,8 @@ export default function JobsView(props: JobsViewProps) {
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                                <td class="text-center py-2.5">
-                                  <button class="px-2 py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
+                                <td class="px-2 py-2.5 overflow-hidden">
+                                  <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={() => openUrl(job.url)}>Open</button>
                                 </td>
                               </tr>
                             )}

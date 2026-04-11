@@ -32,6 +32,13 @@
     --mk-orange:             #b86800;
     --mk-purple:             #7c4dbe;
     --mk-yellow:             #b08800;
+    --ux-radius-sm:          7px;
+    --ux-radius-md:          9px;
+    --ux-radius-lg:          12px;
+    --ux-control-h:          32px;
+    --ux-focus-ring:         0 0 0 3px rgba(61,139,26,0.18);
+    --ux-fast:               110ms ease;
+    --ux-base:               180ms ease;
   }
 
   .dark {
@@ -64,6 +71,7 @@
     --mk-orange:             #FD971F;
     --mk-purple:             #AE81FF;
     --mk-yellow:             #FFD866;
+    --ux-focus-ring:         0 0 0 3px rgba(169,220,118,0.2);
   }
 }
 
@@ -115,3 +123,64 @@ html, body, #root {
 
 [data-tauri-drag-region] { -webkit-app-region: drag; }
 button, input, a { -webkit-app-region: no-drag; }
+
+/* UX polish layer */
+button,
+input,
+textarea,
+select {
+  transition:
+    background-color var(--ux-base),
+    border-color var(--ux-base),
+    color var(--ux-base),
+    box-shadow var(--ux-base),
+    transform var(--ux-fast),
+    opacity var(--ux-fast);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--ux-focus-ring);
+}
+
+.app-titlebar {
+  height: 54px;
+  padding-bottom: 1px;
+}
+
+.app-title-card {
+  border: 1px solid transparent;
+  border-radius: var(--ux-radius-md);
+  background: transparent;
+  padding: 7px 9px;
+}
+
+.app-input {
+  height: var(--ux-control-h);
+  border-radius: var(--ux-radius-sm);
+  border-color: var(--mk-separator);
+  background: color-mix(in oklab, var(--mk-fill) 78%, transparent);
+}
+
+.app-surface {
+  border: 1px solid transparent;
+  border-radius: var(--ux-radius-lg);
+  background: transparent;
+  box-shadow: none;
+}
+
+.hover-lift:hover {
+  transform: translateY(-1px);
+}
+
+.sidebar-nav-item {
+  border-radius: var(--ux-radius-sm);
+  min-height: 32px;
+}
+
+.table-row {
+  transition: background-color var(--ux-base), border-color var(--ux-base);
+}
