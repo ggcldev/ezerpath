@@ -195,6 +195,31 @@ select:focus-visible {
   animation: overlay-in 130ms ease;
 }
 
+.job-description-content > * + * {
+  margin-top: 0.9rem;
+}
+
+.job-description-content p {
+  margin: 0;
+  line-height: 1.72;
+}
+
+.job-description-content ul,
+.job-description-content ol {
+  margin: 0.2rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.job-description-content li + li {
+  margin-top: 0.35rem;
+}
+
+.job-description-content a {
+  color: var(--mk-cyan);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 @keyframes drawer-in {
   from {
     opacity: 0;

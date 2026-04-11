@@ -3,6 +3,8 @@ use chrono::Utc;
 use reqwest::Client;
 use reqwest::Url;
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +15,14 @@ const MAX_PAGES: usize = 5;
 
 pub struct Crawler {
     client: Client,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobDetailsPayload {
+    pub company: String,
+    pub company_logo_url: String,
+    pub description: String,
+    pub description_html: String,
 }
 
 impl Crawler {
@@ -63,6 +73,14 @@ impl Crawler {
             return Err(format!("HTTP {}", resp.status()));
         }
         resp.text().await.map_err(|e| e.to_string())
+    }
+
+    pub async fn fetch_job_details(&self, url: &str) -> Result<JobDetailsPayload, String> {
+        if !is_allowed_job_url(url) {
+            return Err("Unsupported job URL".to_string());
+        }
+        let html = self.fetch(url).await?;
+        parse_job_details(&html)
     }
 }
 
@@ -186,6 +204,157 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
     }
 
     Ok(jobs)
+}
+
+fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
+    let doc = Html::parse_document(html);
+    let script_sel = Selector::parse("script[type='application/ld+json']").map_err(|e| e.to_string())?;
+    let desc_sel = Selector::parse(
+        ".job-description, #job-description, .jobpost-description, .description, .desc, [class*='description']",
+    )
+    .map_err(|e| e.to_string())?;
+    let company_sel = Selector::parse(
+        ".company-name, [class*='company-name'], [class*='job-company'], [class*='employer-name']",
+    )
+    .map_err(|e| e.to_string())?;
+    let logo_sel = Selector::parse(
+        ".company img, [class*='company'] img, [class*='employer'] img, [class*='client'] img",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut company = String::new();
+    let mut company_logo_url = String::new();
+    let mut description = String::new();
+    let mut description_html = String::new();
+
+    for script in doc.select(&script_sel) {
+        let raw = script.text().collect::<String>();
+        if raw.trim().is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+            extract_jsonld_fields(&value, &mut company, &mut company_logo_url, &mut description);
+        }
+    }
+
+    if company.is_empty() {
+        company = extract_best_text(&doc, &company_sel);
+    }
+    if company_logo_url.is_empty() {
+        company_logo_url = doc
+            .select(&logo_sel)
+            .next()
+            .and_then(|e| {
+                e.value()
+                    .attr("src")
+                    .or_else(|| e.value().attr("data-src"))
+                    .or_else(|| {
+                        e.value()
+                            .attr("srcset")
+                            .and_then(|s| s.split(',').next().and_then(|p| p.split_whitespace().next()))
+                    })
+            })
+            .map(normalize_asset_url)
+            .unwrap_or_default();
+    }
+    if description.is_empty() {
+        description = extract_longest_text(&doc, &desc_sel);
+    }
+    if description_html.is_empty() {
+        description_html = doc
+            .select(&desc_sel)
+            .next()
+            .map(|e| e.inner_html())
+            .unwrap_or_default();
+    }
+
+    Ok(JobDetailsPayload {
+        company,
+        company_logo_url,
+        description,
+        description_html,
+    })
+}
+
+fn extract_jsonld_fields(
+    value: &Value,
+    company: &mut String,
+    company_logo_url: &mut String,
+    description: &mut String,
+) {
+    if description.is_empty() {
+        if let Some(desc) = find_first_key_string(value, "description") {
+            *description = normalize_text(&desc);
+        }
+    }
+
+    if company.is_empty() || company_logo_url.is_empty() {
+        if let Some(hiring_org) = find_first_key(value, "hiringOrganization") {
+            if company.is_empty() {
+                if let Some(name) = find_first_key_string(hiring_org, "name") {
+                    *company = normalize_text(&name);
+                }
+            }
+            if company_logo_url.is_empty() {
+                if let Some(logo) = find_first_key_string(hiring_org, "logo") {
+                    *company_logo_url = normalize_asset_url(&logo);
+                }
+            }
+        }
+    }
+}
+
+fn find_first_key<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key) {
+                return Some(found);
+            }
+            for v in map.values() {
+                if let Some(found) = find_first_key(v, key) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                if let Some(found) = find_first_key(v, key) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn find_first_key_string(value: &Value, key: &str) -> Option<String> {
+    let found = find_first_key(value, key)?;
+    match found {
+        Value::String(s) => Some(s.to_string()),
+        Value::Object(map) => map.get("@id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_best_text(doc: &Html, selector: &Selector) -> String {
+    doc.select(selector)
+        .map(|e| normalize_text(&e.text().collect::<String>()))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default()
+}
+
+fn extract_longest_text(doc: &Html, selector: &Selector) -> String {
+    doc.select(selector)
+        .map(|e| normalize_text(&e.text().collect::<String>()))
+        .filter(|t| t.len() >= 60)
+        .max_by_key(|t| t.len())
+        .unwrap_or_default()
+}
+
+fn normalize_text(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn is_allowed_job_url(url: &str) -> bool {

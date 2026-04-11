@@ -1,7 +1,7 @@
 mod crawler;
 mod db;
 
-use crawler::{Crawler, CrawlStats};
+use crawler::{Crawler, CrawlStats, JobDetailsPayload};
 use db::{Database, Job, ScanRun};
 use std::sync::Arc;
 use tauri::{Manager, State};
@@ -74,6 +74,11 @@ async fn get_jobs(state: State<'_, AppState>, keyword: Option<String>, watchlist
 }
 
 #[tauri::command]
+async fn fetch_job_details(state: State<'_, AppState>, url: String) -> Result<JobDetailsPayload, String> {
+    state.crawler.fetch_job_details(&url).await
+}
+
+#[tauri::command]
 async fn toggle_watchlist(state: State<'_, AppState>, job_id: i64) -> Result<bool, String> {
     state.db.toggle_watchlist(job_id).map_err(|e| e.to_string())
 }
@@ -121,6 +126,7 @@ pub fn run() {
             delete_run,
             clear_all_jobs,
             get_jobs,
+            fetch_job_details,
             toggle_watchlist,
             get_keywords,
             add_keyword,
