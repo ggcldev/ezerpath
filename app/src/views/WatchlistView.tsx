@@ -1,6 +1,7 @@
 import { createSignal, For, Show, Resource, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import AnimatedNumber from "../components/AnimatedNumber";
 
 interface Job {
   id: number;
@@ -91,6 +92,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
       return (isNaN(db) ? 0 : db) - (isNaN(da) ? 0 : da);
     });
   };
+  const hasRows = () => (props.jobs() || []).length > 0;
 
   const openUrl = (rawUrl: string) => {
     try {
@@ -118,7 +120,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
         <div class="flex items-center justify-between w-full">
           <div class="flex items-baseline gap-2">
             <h2 class="text-[15px] font-semibold text-mk-text">Watchlist</h2>
-            <span class="text-[12px] text-mk-tertiary">{watchlistedJobs().length}</span>
+            <AnimatedNumber value={watchlistedJobs().length} class="text-[12px] text-mk-tertiary" />
           </div>
           <input
             class="w-40 sm:w-52 max-w-[48vw] px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
@@ -167,7 +169,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
           </colgroup>
           <tbody>
             <Show
-              when={!props.jobs.loading}
+              when={!props.jobs.loading || hasRows()}
               fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
             >
               <For

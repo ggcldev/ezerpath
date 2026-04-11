@@ -1,6 +1,9 @@
 import { createSignal, For, Show, Accessor, Resource, Setter } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { X } from "lucide-solid";
+import toast from "solid-toast";
+import AnimatedNumber from "../components/AnimatedNumber";
 import { runMutation } from "../utils/mutations";
 
 interface CrawlStats {
@@ -33,6 +36,7 @@ export default function ScanView(props: ScanViewProps) {
   };
 
   const handleCrawl = async () => {
+    const loadingToast = toast.loading("Scanning jobs...");
     props.setCrawling(true);
     props.setCrawlResult(null);
     props.setCrawlError("");
@@ -41,8 +45,13 @@ export default function ScanView(props: ScanViewProps) {
       const stats = await invoke<CrawlStats[]>("crawl_jobs", { days: props.dateRange() });
       props.setCrawlResult(stats);
       props.onScanComplete();
+      const found = stats.reduce((sum, s) => sum + s.found, 0);
+      const fresh = stats.reduce((sum, s) => sum + s.new, 0);
+      toast.success(`Scan complete: ${fresh} new, ${found} total.`, { id: loadingToast });
     } catch (e: any) {
-      props.setCrawlError(String(e));
+      const message = String(e);
+      props.setCrawlError(message);
+      toast.error(`Scan failed: ${message}`, { id: loadingToast });
     }
     props.setCrawling(false);
   };
@@ -50,7 +59,7 @@ export default function ScanView(props: ScanViewProps) {
   const handleAddKeyword = async () => {
     const kw = newKeyword().trim();
     if (!kw) return;
-    await runMutation(
+    const ok = await runMutation(
       () => invoke("add_keyword", { keyword: kw }),
       () => {
         setNewKeyword("");
@@ -58,14 +67,24 @@ export default function ScanView(props: ScanViewProps) {
       },
       props.setCrawlError
     );
+    if (ok) {
+      toast.success(`Keyword added: ${kw}`);
+    } else {
+      toast.error("Failed to add keyword.");
+    }
   };
 
   const handleRemoveKeyword = async (kw: string) => {
-    await runMutation(
+    const ok = await runMutation(
       () => invoke("remove_keyword", { keyword: kw }),
       props.onScanComplete,
       props.setCrawlError
     );
+    if (ok) {
+      toast.success(`Keyword removed: ${kw}`);
+    } else {
+      toast.error("Failed to remove keyword.");
+    }
   };
 
   const totalNew = () => props.crawlResult()?.reduce((sum, s) => sum + s.new, 0) ?? 0;
@@ -117,9 +136,7 @@ export default function ScanView(props: ScanViewProps) {
                         aria-label={`Remove keyword ${kw}`}
                         onClick={() => handleRemoveKeyword(kw)}
                       >
-                        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
+                        <X class="w-3 h-3" />
                       </button>
                     </span>
                   )}
@@ -195,7 +212,7 @@ export default function ScanView(props: ScanViewProps) {
           <Show when={props.crawlResult() && !props.crawling()}>
             <div class="rounded-xl bg-mk-grouped-bg border border-mk-green-dim p-5 mb-4">
               <p class="text-[13px] font-medium text-mk-green mb-2">
-                Done — {totalNew()} new, {totalFound()} total
+                Done — <AnimatedNumber value={totalNew()} class="inline-block" /> new, <AnimatedNumber value={totalFound()} class="inline-block" /> total
               </p>
               <div class="flex flex-wrap gap-1.5">
                 <For each={props.crawlResult()!}>

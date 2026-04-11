@@ -1,10 +1,12 @@
 import { createSignal, createResource, createEffect, onCleanup, Match, Switch, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
+import ConfirmModal from "./components/ConfirmModal";
 import ScanView from "./views/ScanView";
 import JobsView from "./views/JobsView";
 import WatchlistView from "./views/WatchlistView";
 import { runMutation } from "./utils/mutations";
+import toast, { Toaster } from "solid-toast";
 import "./App.css";
 
 interface Job {
@@ -31,6 +33,14 @@ interface CrawlStats {
   pages: number;
 }
 
+interface ConfirmDialogState {
+  title: string;
+  description: string;
+  confirmText: string;
+  destructive?: boolean;
+  onConfirm: () => Promise<void>;
+}
+
 function App() {
   const [view, setView] = createSignal<View>("scan");
   const [crawling, setCrawling] = createSignal(false);
@@ -40,6 +50,8 @@ function App() {
   const [dark, setDark] = createSignal(true);
   const [dateRange, setDateRange] = createSignal<number>(3);
   const [globalError, setGlobalError] = createSignal("");
+  const [confirmDialog, setConfirmDialog] = createSignal<ConfirmDialogState | null>(null);
+  const [confirmBusy, setConfirmBusy] = createSignal(false);
 
   const toggleTheme = () => {
     setDark((v) => !v);
@@ -81,19 +93,70 @@ function App() {
   };
 
   const handleDeleteRun = async (runId: number) => {
-    await runMutation(
+    const ok = await runMutation(
       () => invoke("delete_run", { runId }),
       bump,
       setGlobalError
     );
+    if (ok) {
+      toast.success("Scan deleted.");
+    } else {
+      toast.error("Failed to delete scan.");
+    }
   };
 
   const handleClearAll = async () => {
-    await runMutation(
+    const ok = await runMutation(
       () => invoke("clear_all_jobs"),
       bump,
       setGlobalError
     );
+    if (ok) {
+      refetchKeywords();
+      refetchRuns();
+      toast.success("Cleared all jobs and scan history.");
+    } else {
+      toast.error("Failed to clear jobs.");
+    }
+  };
+
+  const requestDeleteRun = (run: ScanRun) => {
+    const label = new Date(run.started_at).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    setConfirmDialog({
+      title: "Delete this scan?",
+      description: `This will remove the ${label} scan and all jobs attached to it.`,
+      confirmText: "Delete scan",
+      destructive: true,
+      onConfirm: async () => handleDeleteRun(run.id),
+    });
+  };
+
+  const requestClearAll = () => {
+    setConfirmDialog({
+      title: "Clear all jobs?",
+      description: "This will remove all scan history and all saved jobs. This action cannot be undone.",
+      confirmText: "Clear all",
+      destructive: true,
+      onConfirm: handleClearAll,
+    });
+  };
+
+  const handleConfirmModal = async () => {
+    const dialog = confirmDialog();
+    if (!dialog || confirmBusy()) return;
+    setConfirmBusy(true);
+    try {
+      await dialog.onConfirm();
+      setConfirmDialog(null);
+    } finally {
+      setConfirmBusy(false);
+    }
   };
 
   const handleScanStart = () => setView("jobs");
@@ -107,8 +170,8 @@ function App() {
         dark={dark()}
         onToggleTheme={toggleTheme}
         runs={runs}
-        onDeleteRun={handleDeleteRun}
-        onClearAll={handleClearAll}
+        onRequestDeleteRun={requestDeleteRun}
+        onRequestClearAll={requestClearAll}
       />
       <main class="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
         <Show when={globalError()}>
@@ -152,6 +215,29 @@ function App() {
           </Match>
         </Switch>
       </main>
+      <ConfirmModal
+        open={!!confirmDialog()}
+        title={confirmDialog()?.title ?? ""}
+        description={confirmDialog()?.description ?? ""}
+        confirmText={confirmDialog()?.confirmText ?? "Confirm"}
+        destructive={!!confirmDialog()?.destructive}
+        busy={confirmBusy()}
+        onCancel={() => !confirmBusy() && setConfirmDialog(null)}
+        onConfirm={handleConfirmModal}
+      />
+      <Toaster
+        position="top-right"
+        gutter={8}
+        toastOptions={{
+          duration: 3200,
+          style: {
+            "background-color": "var(--mk-grouped-bg)",
+            color: "var(--mk-text)",
+            border: "1px solid var(--mk-separator)",
+            "font-size": "12px",
+          },
+        }}
+      />
     </div>
   );
 }

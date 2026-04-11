@@ -2,6 +2,7 @@ import { createSignal, createMemo, For, Show, Resource, onCleanup } from "solid-
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
+import AnimatedNumber from "../components/AnimatedNumber";
 import { filterJobsByScope, getLatestRunId, latestRunCount as calcLatestRunCount } from "../utils/jobs";
 
 interface Job {
@@ -221,6 +222,7 @@ export default function JobsView(props: JobsViewProps) {
   });
 
   const totalCount = createMemo(() => visibleJobs().reduce((s, g) => s + g.jobs.length, 0));
+  const hasRows = createMemo(() => (props.jobs() || []).length > 0);
 
   const openUrl = (rawUrl: string) => {
     try {
@@ -249,7 +251,7 @@ export default function JobsView(props: JobsViewProps) {
         <div class="flex items-center justify-between w-full">
           <div class="flex items-baseline gap-2">
             <h2 class="text-[15px] font-semibold text-mk-text">All Jobs</h2>
-            <span class="text-[12px] text-mk-tertiary">{totalCount()}</span>
+            <AnimatedNumber value={totalCount()} class="text-[12px] text-mk-tertiary" />
           </div>
           <input
             class="w-40 sm:w-52 max-w-[48vw] px-2.5 py-1 text-[12px] rounded-md bg-mk-fill border border-mk-separator text-mk-text outline-none focus:border-mk-green focus:ring-2 focus:ring-mk-green-dim placeholder-mk-tertiary transition-all"
@@ -324,7 +326,7 @@ export default function JobsView(props: JobsViewProps) {
             >
               <span class="text-[12px] font-medium truncate">All scans</span>
               <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
-                {(props.jobs() || []).length}
+                <AnimatedNumber value={(props.jobs() || []).length} class="inline-block" />
               </span>
             </button>
 
@@ -338,7 +340,7 @@ export default function JobsView(props: JobsViewProps) {
             >
               <span class="text-[12px] font-medium truncate">Latest scan</span>
               <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
-                {latestRunCount()}
+                <AnimatedNumber value={latestRunCount()} class="inline-block" />
               </span>
             </button>
           </div>
@@ -432,7 +434,7 @@ export default function JobsView(props: JobsViewProps) {
               </colgroup>
               <tbody>
                 <Show
-                  when={!props.jobs.loading}
+                  when={!props.jobs.loading || hasRows()}
                   fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
                 >
                   <Show

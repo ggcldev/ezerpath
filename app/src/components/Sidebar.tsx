@@ -1,6 +1,6 @@
-import { For, Show, Resource } from "solid-js";
+import { For, Show, Resource, type Component } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { tryClearAll } from "../utils/confirmations";
+import { CirclePlus, List, Moon, Star, Sun, Trash2 } from "lucide-solid";
 
 export type View = "scan" | "jobs" | "watchlist";
 
@@ -19,13 +19,13 @@ interface SidebarProps {
   dark: boolean;
   onToggleTheme: () => void;
   runs: Resource<ScanRun[]>;
-  onDeleteRun: (runId: number) => void;
-  onClearAll: () => void;
+  onRequestDeleteRun: (run: ScanRun) => void;
+  onRequestClearAll: () => void;
 }
 
-const navItems: { id: View; label: string; icon: string }[] = [
-  { id: "jobs", label: "All Jobs", icon: "M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" },
-  { id: "watchlist", label: "Watchlist", icon: "M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" },
+const navItems: { id: View; label: string; Icon: Component<{ class?: string }> }[] = [
+  { id: "jobs", label: "All Jobs", Icon: List },
+  { id: "watchlist", label: "Watchlist", Icon: Star },
 ];
 
 function formatRunDate(raw: string): string {
@@ -65,9 +65,7 @@ export default function Sidebar(props: SidebarProps) {
           onClick={() => props.onNavigate("scan")}
           disabled={props.crawling}
         >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-          </svg>
+          <CirclePlus class="w-3.5 h-3.5" />
           New Scan
           <Show when={props.crawling}>
             <span class="ml-1 w-[5px] h-[5px] rounded-full bg-current opacity-60 animate-pulse" />
@@ -90,9 +88,7 @@ export default function Sidebar(props: SidebarProps) {
                   onClick={() => props.onNavigate(item.id)}
                 >
                   <span class="flex items-center gap-2.5">
-                    <svg class="w-[15px] h-[15px] shrink-0 opacity-75" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" d={item.icon} />
-                    </svg>
+                    <item.Icon class="w-[15px] h-[15px] shrink-0 opacity-75" />
                     {item.label}
                   </span>
                 </button>
@@ -108,7 +104,7 @@ export default function Sidebar(props: SidebarProps) {
           <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-sidebar-tertiary">Scan History</p>
           <button
             class="text-[10px] text-mk-sidebar-tertiary hover:text-mk-pink transition-colors"
-            onClick={() => { tryClearAll(confirm, props.onClearAll); }}
+            onClick={props.onRequestClearAll}
             title="Clear all jobs and history"
             aria-label="Clear all jobs and scan history"
           >
@@ -137,15 +133,9 @@ export default function Sidebar(props: SidebarProps) {
                     class="mt-0.5 shrink-0 text-mk-sidebar-tertiary hover:text-mk-pink transition-colors"
                     title="Delete this scan and its jobs"
                     aria-label="Delete scan run"
-                    onClick={() => {
-                      if (confirm("Remove this scan and all jobs from this scan?")) {
-                        props.onDeleteRun(run.id);
-                      }
-                    }}
+                    onClick={() => props.onRequestDeleteRun(run)}
                   >
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0115.916 21H8.084a2.25 2.25 0 01-2.244-2.327L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0V4.875c0-1.242-.91-2.291-2.146-2.468A51.964 51.964 0 0012 2.25c-1.845 0-3.67.108-5.454.318C5.31 2.745 4.4 3.793 4.4 5.036v.255m7.6 3.709v9" />
-                    </svg>
+                    <Trash2 class="w-3.5 h-3.5" />
                   </button>
                 </div>
               )}
@@ -164,14 +154,10 @@ export default function Sidebar(props: SidebarProps) {
           aria-label={props.dark ? "Switch to light theme" : "Switch to dark theme"}
         >
           <span class="absolute left-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
-            <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
-            </svg>
+            <Sun class="w-3.5 h-3.5" />
           </span>
           <span class="absolute right-1.5 w-3.5 h-3.5 flex items-center justify-center text-white opacity-70">
-            <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
-            </svg>
+            <Moon class="w-3.5 h-3.5" />
           </span>
           <span
             class="absolute w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200"
