@@ -55,6 +55,10 @@ A lightweight, cross-platform job hunting app that crawls job boards, organizes 
 - [ ] Resume builder — generate a resume from user's skills/experience
 - [ ] Tailored resume — feed a specific job description + user profile to Claude, get a custom resume
 - [ ] Job match scoring — AI ranks how well a job matches the user's profile
+- [ ] AI chat copilot — ask natural-language questions about scanned jobs
+- [ ] Resume upload + AI matching — upload CV/resume and rank best-fit jobs from current scan
+- [ ] Smart rescan recommendations — if matches are weak or empty, AI suggests next best keywords and scan strategy
+- [ ] Job summarization — concise summaries for selected jobs and grouped summaries for multiple jobs
 
 ### Account & Apply
 
@@ -135,6 +139,48 @@ A lightweight, cross-platform job hunting app that crawls job boards, organizes 
 - [ ] Resume builder — input form + AI generation
 - [ ] Tailored resume per job — one-click generate
 - [ ] Job match scoring
+
+### Phase 3.1 — AI Copilot for Job Discovery (Detailed Plan)
+- [ ] AI chat panel in app (UI)
+  - [ ] Add persistent chat drawer/window with conversation history per user
+  - [ ] Add quick prompts: `Best jobs for me`, `Summarize selected job`, `Suggest keywords`
+  - [ ] Add context chips so user can include/exclude filters (date range, keyword, watchlist only)
+- [ ] Resume ingestion pipeline
+  - [ ] Add resume upload (`.pdf`, `.docx`, `.txt`)
+  - [ ] Extract text locally (Rust pipeline) and normalize into structured profile
+  - [ ] Store parsed profile in SQLite with versioning (so user can update resume over time)
+- [ ] Job-to-resume matching engine
+  - [ ] Build baseline relevance scoring (skills overlap, role/title similarity, compensation fit)
+  - [ ] Add AI reranking step for top-N jobs to improve precision
+  - [ ] Return explainable match reasons (why this job is a fit, gaps, caveats)
+- [ ] “No strong matches” fallback intelligence
+  - [ ] Detect low-confidence results or zero relevant jobs
+  - [ ] Generate recommended scan keywords from resume + prior scans
+  - [ ] Offer one-click `Start New Scan` using suggested keywords and date range
+- [ ] Job summarization capabilities
+  - [ ] Single-job summary: role, requirements, compensation, risks, action items
+  - [ ] Multi-job comparison summary: top options, tradeoffs, who should apply
+  - [ ] Copy/export summary to clipboard for quick sharing
+- [ ] Prompting + context orchestration
+  - [ ] Build context builder from local DB (`jobs`, `watchlist`, `keywords`, `resume_profile`)
+  - [ ] Add token-budget strategy (truncate/segment long descriptions safely)
+  - [ ] Add prompt templates for Q&A, matching, keyword recommendation, summarization
+- [ ] Safety, privacy, and controls
+  - [ ] Add explicit user consent before sending resume/job text to AI API
+  - [ ] Add settings: model/provider, max tokens, temperature, request timeout
+  - [ ] Add redact mode for sensitive resume sections before API call
+- [ ] Reliability and UX guardrails
+  - [ ] Add graceful fallback when AI API is unavailable
+  - [ ] Add loading states, partial streaming output, and retry actions
+  - [ ] Cache recent AI outputs per job/resume hash to reduce repeated cost/latency
+- [ ] Observability (local-first)
+  - [ ] Log AI request metadata locally (latency, token counts, success/failure)
+  - [ ] Add debug view for prompt/context preview (developer mode)
+- [ ] Acceptance criteria
+  - [ ] User can ask chat questions about available jobs and get grounded answers from scanned data
+  - [ ] User can upload a resume and receive ranked best-fit jobs with explanations
+  - [ ] When matches are weak, user receives actionable keyword suggestions and can launch a new scan in one click
+  - [ ] User can generate readable summaries for one job or multiple jobs without leaving the app
 
 ### Phase 4 — Account & Apply
 - [ ] OnlineJobs.ph login via webview
