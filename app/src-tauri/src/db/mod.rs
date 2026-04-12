@@ -1,3 +1,4 @@
+use crate::ai::{AiConversation, AiMessage, AiRuntimeConfig, EmbeddingIndexStatus, ResumeProfile};
 use rusqlite::{Connection, params, params_from_iter};
 use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,30 @@ pub struct ScanRun {
     pub keywords: String,
     pub total_found: i64,
     pub total_new: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct JobForEmbedding {
+    pub id: i64,
+    pub title: String,
+    pub company: String,
+    pub pay: String,
+    pub summary: String,
+    pub keyword: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JobEmbeddingRow {
+    pub job_id: i64,
+    pub title: String,
+    pub company: String,
+    pub pay: String,
+    pub keyword: String,
+    pub url: String,
+    pub watchlisted: bool,
+    pub scraped_at: String,
+    pub vector_json: String,
 }
 
 pub struct Database {
@@ -83,6 +108,65 @@ impl Database {
                 total_new    INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS resume_profiles (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                source_file     TEXT NOT NULL DEFAULT '',
+                raw_text        TEXT NOT NULL DEFAULT '',
+                normalized_text TEXT NOT NULL DEFAULT '',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                is_active       INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS job_embeddings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                model_name   TEXT NOT NULL,
+                vector       TEXT NOT NULL DEFAULT '',
+                updated_at   TEXT NOT NULL,
+                UNIQUE(job_id, model_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS resume_embeddings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                resume_id    INTEGER NOT NULL REFERENCES resume_profiles(id) ON DELETE CASCADE,
+                model_name   TEXT NOT NULL,
+                vector       TEXT NOT NULL DEFAULT '',
+                updated_at   TEXT NOT NULL,
+                UNIQUE(resume_id, model_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_conversations (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                title       TEXT NOT NULL DEFAULT 'New Chat',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_messages (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id  INTEGER NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+                role             TEXT NOT NULL,
+                content          TEXT NOT NULL,
+                created_at       TEXT NOT NULL,
+                meta_json        TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE IF NOT EXISTS ai_runs (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_type   TEXT NOT NULL,
+                latency_ms  INTEGER NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL,
+                error       TEXT,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL
+            );
+
             INSERT OR IGNORE INTO keywords (keyword) VALUES ('seo specialist');
             INSERT OR IGNORE INTO keywords (keyword) VALUES ('link building');
             INSERT OR IGNORE INTO keywords (keyword) VALUES ('outreach');
@@ -98,6 +182,36 @@ impl Database {
         conn.execute_batch("ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';").ok();
         conn.execute_batch("ALTER TABLE runs ADD COLUMN error_message TEXT;").ok();
         conn.execute_batch("ALTER TABLE runs ADD COLUMN finished_at TEXT;").ok();
+
+        let defaults = AiRuntimeConfig::default();
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_ollama_base_url', ?1)",
+            params![defaults.ollama_base_url],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_ollama_model', ?1)",
+            params![defaults.ollama_model],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_embedding_service_url', ?1)",
+            params![defaults.embedding_service_url],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_embedding_model', ?1)",
+            params![defaults.embedding_model],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_temperature', ?1)",
+            params![defaults.temperature.to_string()],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_max_tokens', ?1)",
+            params![defaults.max_tokens.to_string()],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_timeout_ms', ?1)",
+            params![defaults.timeout_ms.to_string()],
+        )?;
 
         Ok(Self { conn: Mutex::new(conn) })
     }
@@ -277,6 +391,322 @@ impl Database {
     pub fn remove_keyword(&self, keyword: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM keywords WHERE keyword = ?1", params![keyword])?;
+        Ok(())
+    }
+
+    pub fn save_resume_profile(&self, name: &str, source_file: Option<&str>, raw_text: &str, normalized_text: &str, now: &str) -> Result<ResumeProfile, rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE resume_profiles SET is_active = 0", [])?;
+        conn.execute(
+            "INSERT INTO resume_profiles (name, source_file, raw_text, normalized_text, created_at, updated_at, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            params![name, source_file.unwrap_or(""), raw_text, normalized_text, now, now],
+        )?;
+        let id = conn.last_insert_rowid();
+        Ok(ResumeProfile {
+            id,
+            name: name.to_string(),
+            source_file: source_file.unwrap_or("").to_string(),
+            raw_text: raw_text.to_string(),
+            normalized_text: normalized_text.to_string(),
+            created_at: now.to_string(),
+            updated_at: now.to_string(),
+            is_active: true,
+        })
+    }
+
+    pub fn list_resume_profiles(&self) -> Result<Vec<ResumeProfile>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, source_file, raw_text, normalized_text, created_at, updated_at, is_active
+             FROM resume_profiles
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ResumeProfile {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                source_file: row.get(2)?,
+                raw_text: row.get(3)?,
+                normalized_text: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                is_active: row.get::<_, i32>(7)? != 0,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows { out.push(row?); }
+        Ok(out)
+    }
+
+    pub fn set_active_resume(&self, resume_id: i64) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE resume_profiles SET is_active = 0", [])?;
+        conn.execute(
+            "UPDATE resume_profiles SET is_active = 1, updated_at = ?1 WHERE id = ?2",
+            params![chrono::Utc::now().to_rfc3339(), resume_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_resume_profile(&self, resume_id: i64) -> Result<Option<ResumeProfile>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, source_file, raw_text, normalized_text, created_at, updated_at, is_active
+             FROM resume_profiles WHERE id = ?1 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![resume_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(ResumeProfile {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                source_file: row.get(2)?,
+                raw_text: row.get(3)?,
+                normalized_text: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                is_active: row.get::<_, i32>(7)? != 0,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn list_jobs_for_embedding(&self) -> Result<Vec<JobForEmbedding>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, company, pay, summary, keyword, url
+             FROM jobs
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(JobForEmbedding {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                company: row.get(2)?,
+                pay: row.get(3)?,
+                summary: row.get(4)?,
+                keyword: row.get(5)?,
+                url: row.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows { out.push(row?); }
+        Ok(out)
+    }
+
+    pub fn upsert_job_embedding(&self, job_id: i64, model_name: &str, vector_json: &str, updated_at: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO job_embeddings (job_id, model_name, vector, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(job_id, model_name)
+             DO UPDATE SET vector = excluded.vector, updated_at = excluded.updated_at",
+            params![job_id, model_name, vector_json, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_resume_embedding(&self, resume_id: i64, model_name: &str, vector_json: &str, updated_at: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO resume_embeddings (resume_id, model_name, vector, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(resume_id, model_name)
+             DO UPDATE SET vector = excluded.vector, updated_at = excluded.updated_at",
+            params![resume_id, model_name, vector_json, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_resume_embedding(&self, resume_id: i64, model_name: &str) -> Result<Option<String>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT vector FROM resume_embeddings WHERE resume_id = ?1 AND model_name = ?2 LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![resume_id, model_name])?;
+        if let Some(row) = rows.next()? {
+            let vector: String = row.get(0)?;
+            return Ok(Some(vector));
+        }
+        Ok(None)
+    }
+
+    pub fn list_job_embeddings(&self, model_name: &str) -> Result<Vec<JobEmbeddingRow>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT e.job_id, j.title, j.company, j.pay, j.keyword, j.url, j.watchlisted, j.scraped_at, e.vector
+             FROM job_embeddings e
+             JOIN jobs j ON j.id = e.job_id
+             WHERE e.model_name = ?1",
+        )?;
+        let rows = stmt.query_map(params![model_name], |row| {
+            Ok(JobEmbeddingRow {
+                job_id: row.get(0)?,
+                title: row.get(1)?,
+                company: row.get(2)?,
+                pay: row.get(3)?,
+                keyword: row.get(4)?,
+                url: row.get(5)?,
+                watchlisted: row.get::<_, i32>(6)? != 0,
+                scraped_at: row.get(7)?,
+                vector_json: row.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows { out.push(row?); }
+        Ok(out)
+    }
+
+    pub fn create_ai_conversation(&self, title: Option<&str>, now: &str) -> Result<AiConversation, rusqlite::Error> {
+        let conn = self.conn()?;
+        let title = title.unwrap_or("New Chat");
+        conn.execute(
+            "INSERT INTO ai_conversations (title, created_at, updated_at) VALUES (?1, ?2, ?3)",
+            params![title, now, now],
+        )?;
+        let id = conn.last_insert_rowid();
+        Ok(AiConversation {
+            id,
+            title: title.to_string(),
+            created_at: now.to_string(),
+            updated_at: now.to_string(),
+        })
+    }
+
+    pub fn list_ai_conversations(&self) -> Result<Vec<AiConversation>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, created_at, updated_at FROM ai_conversations ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AiConversation {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows { out.push(row?); }
+        Ok(out)
+    }
+
+    pub fn append_ai_message(&self, conversation_id: i64, role: &str, content: &str, meta_json: &str, now: &str) -> Result<AiMessage, rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO ai_messages (conversation_id, role, content, created_at, meta_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![conversation_id, role, content, now, meta_json],
+        )?;
+        conn.execute(
+            "UPDATE ai_conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conversation_id],
+        )?;
+        let id = conn.last_insert_rowid();
+        Ok(AiMessage {
+            id,
+            conversation_id,
+            role: role.to_string(),
+            content: content.to_string(),
+            created_at: now.to_string(),
+            meta_json: meta_json.to_string(),
+        })
+    }
+
+    pub fn get_ai_messages(&self, conversation_id: i64) -> Result<Vec<AiMessage>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, created_at, meta_json
+             FROM ai_messages
+             WHERE conversation_id = ?1
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![conversation_id], |row| {
+            Ok(AiMessage {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+                meta_json: row.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows { out.push(row?); }
+        Ok(out)
+    }
+
+    pub fn embedding_index_status(&self, embedding_model: &str) -> Result<EmbeddingIndexStatus, rusqlite::Error> {
+        let conn = self.conn()?;
+        let jobs_total: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
+        let resumes_total: i64 = conn.query_row("SELECT COUNT(*) FROM resume_profiles", [], |row| row.get(0))?;
+        let jobs_indexed: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT job_id) FROM job_embeddings WHERE model_name = ?1",
+            params![embedding_model],
+            |row| row.get(0),
+        )?;
+        let resumes_indexed: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT resume_id) FROM resume_embeddings WHERE model_name = ?1",
+            params![embedding_model],
+            |row| row.get(0),
+        )?;
+        Ok(EmbeddingIndexStatus {
+            jobs_total,
+            jobs_indexed,
+            resumes_total,
+            resumes_indexed,
+            active_embedding_model: embedding_model.to_string(),
+        })
+    }
+
+    pub fn get_ai_runtime_config(&self) -> Result<AiRuntimeConfig, rusqlite::Error> {
+        let conn = self.conn()?;
+        let get = |key: &str| -> Result<String, rusqlite::Error> {
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+        };
+        let default = AiRuntimeConfig::default();
+        Ok(AiRuntimeConfig {
+            ollama_base_url: get("ai_ollama_base_url").unwrap_or(default.ollama_base_url),
+            ollama_model: get("ai_ollama_model").unwrap_or(default.ollama_model),
+            embedding_service_url: get("ai_embedding_service_url").unwrap_or(default.embedding_service_url),
+            embedding_model: get("ai_embedding_model").unwrap_or(default.embedding_model),
+            temperature: get("ai_temperature").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default.temperature),
+            max_tokens: get("ai_max_tokens").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(default.max_tokens),
+            timeout_ms: get("ai_timeout_ms").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(default.timeout_ms),
+        })
+    }
+
+    pub fn set_ai_runtime_config(&self, cfg: &AiRuntimeConfig) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        let upsert = |key: &str, value: String| -> Result<(), rusqlite::Error> {
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+            Ok(())
+        };
+        upsert("ai_ollama_base_url", cfg.ollama_base_url.clone())?;
+        upsert("ai_ollama_model", cfg.ollama_model.clone())?;
+        upsert("ai_embedding_service_url", cfg.embedding_service_url.clone())?;
+        upsert("ai_embedding_model", cfg.embedding_model.clone())?;
+        upsert("ai_temperature", cfg.temperature.to_string())?;
+        upsert("ai_max_tokens", cfg.max_tokens.to_string())?;
+        upsert("ai_timeout_ms", cfg.timeout_ms.to_string())?;
+        Ok(())
+    }
+
+    pub fn log_ai_run(&self, task_type: &str, latency_ms: i64, status: &str, error: Option<&str>, created_at: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO ai_runs (task_type, latency_ms, status, error, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![task_type, latency_ms, status, error.unwrap_or(""), created_at],
+        )?;
         Ok(())
     }
 }

@@ -6,6 +6,7 @@ import SettingsPanel from "./components/SettingsPanel";
 import ScanView from "./views/ScanView";
 import JobsView from "./views/JobsView";
 import WatchlistView from "./views/WatchlistView";
+import EzerView from "./views/EzerView";
 import { runMutation } from "./utils/mutations";
 import toast, { Toaster } from "solid-toast";
 import "./App.css";
@@ -43,6 +44,35 @@ interface ConfirmDialogState {
   onConfirm: () => Promise<void>;
 }
 
+interface AiRuntimeConfig {
+  ollama_base_url: string;
+  ollama_model: string;
+  embedding_service_url: string;
+  embedding_model: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_ms: number;
+}
+
+interface EmbeddingIndexStatus {
+  jobs_total: number;
+  jobs_indexed: number;
+  resumes_total: number;
+  resumes_indexed: number;
+  active_embedding_model: string;
+}
+
+interface ResumeProfile {
+  id: number;
+  name: string;
+  source_file: string;
+  raw_text: string;
+  normalized_text: string;
+  created_at: string;
+  updated_at: string;
+  is_active: boolean;
+}
+
 function App() {
   const [view, setView] = createSignal<View>("scan");
   const [crawling, setCrawling] = createSignal(false);
@@ -55,6 +85,23 @@ function App() {
   const [confirmDialog, setConfirmDialog] = createSignal<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = createSignal(false);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [aiBusy, setAiBusy] = createSignal(false);
+  const [ollamaStatus, setOllamaStatus] = createSignal("");
+  const [embeddingStatus, setEmbeddingStatus] = createSignal("");
+  const [indexStatus, setIndexStatus] = createSignal("");
+  const [resumes, setResumes] = createSignal<ResumeProfile[]>([]);
+  const [selectedResumeId, setSelectedResumeId] = createSignal<number | null>(null);
+  const [resumeFilePath, setResumeFilePath] = createSignal("");
+  const [resumeStatus, setResumeStatus] = createSignal("");
+  const [aiConfig, setAiConfig] = createSignal<AiRuntimeConfig>({
+    ollama_base_url: "http://127.0.0.1:11434",
+    ollama_model: "qwen2.5:7b-instruct",
+    embedding_service_url: "http://127.0.0.1:8765",
+    embedding_model: "all-MiniLM-L6-v2",
+    temperature: 0.2,
+    max_tokens: 1024,
+    timeout_ms: 30000,
+  });
 
   const toggleTheme = () => {
     setDark((v) => !v);
@@ -164,6 +211,109 @@ function App() {
 
   const handleScanStart = () => setView("jobs");
 
+  const loadAiConfig = async () => {
+    try {
+      const cfg = await invoke<AiRuntimeConfig>("get_ai_runtime_config");
+      setAiConfig(cfg);
+    } catch (e: any) {
+      setGlobalError(String(e));
+    }
+  };
+
+  const loadResumes = async () => {
+    try {
+      const items = await invoke<ResumeProfile[]>("list_resumes");
+      setResumes(items);
+      const active = items.find((r) => r.is_active);
+      if (active) setSelectedResumeId(active.id);
+      else if (items.length > 0 && selectedResumeId() === null) setSelectedResumeId(items[0].id);
+    } catch (e: any) {
+      setGlobalError(String(e));
+    }
+  };
+
+  const withAiBusy = async (fn: () => Promise<void>) => {
+    if (aiBusy()) return;
+    setAiBusy(true);
+    try {
+      await fn();
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const handleOpenSettings = async () => {
+    setSettingsOpen(true);
+    await loadAiConfig();
+    await loadResumes();
+  };
+
+  const saveAiConfig = () =>
+    withAiBusy(async () => {
+      await invoke("set_ai_runtime_config", { config: aiConfig() });
+      toast.success("AI settings saved.");
+    });
+
+  const checkOllama = () =>
+    withAiBusy(async () => {
+      const health = await invoke<{ ok: boolean; message: string; model_count: number }>("ai_health_check");
+      setOllamaStatus(`${health.message} Models: ${health.model_count}`);
+      toast.success("Ollama check completed.");
+    });
+
+  const checkEmbedding = () =>
+    withAiBusy(async () => {
+      const health = await invoke<{ ok: boolean; message: string; model_name: string }>("ai_embedding_health_check");
+      setEmbeddingStatus(`${health.message} Model: ${health.model_name}`);
+      toast.success("Embedding service check completed.");
+    });
+
+  const indexJobs = () =>
+    withAiBusy(async () => {
+      const status = await invoke<EmbeddingIndexStatus>("index_jobs_embeddings");
+      setIndexStatus(
+        `Indexed ${status.jobs_indexed}/${status.jobs_total} jobs and ${status.resumes_indexed}/${status.resumes_total} resumes (${status.active_embedding_model}).`
+      );
+      toast.success("Job embeddings indexed.");
+    });
+
+  const uploadResumeFromPath = () =>
+    withAiBusy(async () => {
+      if (!resumeFilePath().trim()) {
+        toast.error("Please enter a resume file path first.");
+        return;
+      }
+      const profile = await invoke<ResumeProfile>("upload_resume_from_file", {
+        filePath: resumeFilePath().trim(),
+        displayName: null,
+      });
+      setResumeStatus(`Uploaded: ${profile.name}`);
+      await loadResumes();
+      setSelectedResumeId(profile.id);
+      toast.success("Resume uploaded.");
+    });
+
+  const selectResume = (resumeId: number) => {
+    if (!Number.isFinite(resumeId) || resumeId <= 0) return;
+    setSelectedResumeId(resumeId);
+    invoke("set_active_resume", { resumeId }).catch(() => {
+      // do not interrupt UI flow; settings status can be refreshed manually
+    });
+  };
+
+  const indexResume = () =>
+    withAiBusy(async () => {
+      if (!selectedResumeId()) {
+        toast.error("Select a resume profile first.");
+        return;
+      }
+      const status = await invoke<EmbeddingIndexStatus>("index_resume_embedding", { resumeId: selectedResumeId() });
+      setResumeStatus(
+        `Indexed resume. Jobs: ${status.jobs_indexed}/${status.jobs_total}, Resumes: ${status.resumes_indexed}/${status.resumes_total} (${status.active_embedding_model}).`
+      );
+      toast.success("Resume embedding indexed.");
+    });
+
   return (
     <div class="h-screen flex bg-mk-bg">
       <Sidebar
@@ -172,7 +322,7 @@ function App() {
         crawling={crawling()}
         dark={dark()}
         onToggleTheme={toggleTheme}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={handleOpenSettings}
         runs={runs}
         onRequestDeleteRun={requestDeleteRun}
         onRequestClearAll={requestClearAll}
@@ -217,6 +367,9 @@ function App() {
           <Match when={view() === "watchlist"}>
             <WatchlistView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} />
           </Match>
+          <Match when={view() === "ezer"}>
+            <EzerView />
+          </Match>
         </Switch>
       </main>
       <ConfirmModal
@@ -233,6 +386,24 @@ function App() {
         open={settingsOpen()}
         dark={dark()}
         onToggleTheme={toggleTheme}
+        aiConfig={aiConfig()}
+        aiBusy={aiBusy()}
+        ollamaStatus={ollamaStatus()}
+        embeddingStatus={embeddingStatus()}
+        indexStatus={indexStatus()}
+        resumes={resumes().map((r) => ({ id: r.id, name: r.name, source_file: r.source_file, is_active: r.is_active }))}
+        selectedResumeId={selectedResumeId()}
+        resumeFilePath={resumeFilePath()}
+        resumeStatus={resumeStatus()}
+        onAiConfigChange={setAiConfig}
+        onSaveAiConfig={saveAiConfig}
+        onCheckOllama={checkOllama}
+        onCheckEmbedding={checkEmbedding}
+        onIndexJobs={indexJobs}
+        onResumeFilePathChange={setResumeFilePath}
+        onUploadResumeFromPath={uploadResumeFromPath}
+        onSelectResume={selectResume}
+        onIndexResume={indexResume}
         onClose={() => setSettingsOpen(false)}
       />
       <Toaster

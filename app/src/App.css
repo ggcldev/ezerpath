@@ -146,6 +146,11 @@ select:focus-visible {
   box-shadow: var(--ux-focus-ring);
 }
 
+.flat-focus:focus-visible {
+  box-shadow: none !important;
+  border-color: var(--mk-separator) !important;
+}
+
 .app-titlebar {
   height: 54px;
   padding-bottom: 1px;

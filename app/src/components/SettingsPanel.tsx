@@ -1,10 +1,45 @@
 import { For, Show } from "solid-js";
 import { Moon, Sun, X } from "lucide-solid";
 
+interface AiRuntimeConfig {
+  ollama_base_url: string;
+  ollama_model: string;
+  embedding_service_url: string;
+  embedding_model: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_ms: number;
+}
+
+interface ResumeProfile {
+  id: number;
+  name: string;
+  source_file: string;
+  is_active: boolean;
+}
+
 interface SettingsPanelProps {
   open: boolean;
   dark: boolean;
   onToggleTheme: () => void;
+  aiConfig: AiRuntimeConfig;
+  aiBusy: boolean;
+  ollamaStatus: string;
+  embeddingStatus: string;
+  indexStatus: string;
+  resumes: ResumeProfile[];
+  selectedResumeId: number | null;
+  resumeFilePath: string;
+  resumeStatus: string;
+  onAiConfigChange: (next: AiRuntimeConfig) => void;
+  onSaveAiConfig: () => void;
+  onCheckOllama: () => void;
+  onCheckEmbedding: () => void;
+  onIndexJobs: () => void;
+  onResumeFilePathChange: (value: string) => void;
+  onUploadResumeFromPath: () => void;
+  onSelectResume: (resumeId: number) => void;
+  onIndexResume: () => void;
   onClose: () => void;
 }
 
@@ -108,6 +143,176 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                 </div>
               )}
             </For>
+
+            <div class="rounded-lg border border-mk-separator/80 bg-mk-bg/40 p-4">
+              <h3 class="text-[14px] font-semibold text-mk-text">AI Runtime</h3>
+              <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <label class="text-[12px] text-mk-secondary">
+                  Ollama URL
+                  <input
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={props.aiConfig.ollama_base_url}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, ollama_base_url: e.currentTarget.value })}
+                  />
+                </label>
+                <label class="text-[12px] text-mk-secondary">
+                  Ollama Model
+                  <input
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={props.aiConfig.ollama_model}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, ollama_model: e.currentTarget.value })}
+                  />
+                </label>
+                <label class="text-[12px] text-mk-secondary">
+                  Embedding Service URL
+                  <input
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={props.aiConfig.embedding_service_url}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, embedding_service_url: e.currentTarget.value })}
+                  />
+                </label>
+                <label class="text-[12px] text-mk-secondary">
+                  Embedding Model
+                  <input
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={props.aiConfig.embedding_model}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, embedding_model: e.currentTarget.value })}
+                  />
+                </label>
+              </div>
+
+              <div class="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <label class="text-[12px] text-mk-secondary">
+                  Temperature
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="2"
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={String(props.aiConfig.temperature)}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, temperature: Number(e.currentTarget.value) || 0 })}
+                  />
+                </label>
+                <label class="text-[12px] text-mk-secondary">
+                  Max Tokens
+                  <input
+                    type="number"
+                    min="64"
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={String(props.aiConfig.max_tokens)}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, max_tokens: Number(e.currentTarget.value) || 256 })}
+                  />
+                </label>
+                <label class="text-[12px] text-mk-secondary">
+                  Timeout (ms)
+                  <input
+                    type="number"
+                    min="1000"
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={String(props.aiConfig.timeout_ms)}
+                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, timeout_ms: Number(e.currentTarget.value) || 30000 })}
+                  />
+                </label>
+              </div>
+
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  class="px-3 py-1.5 rounded-md text-[12px] font-semibold bg-mk-green hover:bg-mk-green-hover transition-colors"
+                  style={{ color: "var(--mk-sidebar)" }}
+                  disabled={props.aiBusy}
+                  onClick={props.onSaveAiConfig}
+                >
+                  Save AI Settings
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                  disabled={props.aiBusy}
+                  onClick={props.onCheckOllama}
+                >
+                  Test Ollama
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                  disabled={props.aiBusy}
+                  onClick={props.onCheckEmbedding}
+                >
+                  Test Embeddings
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                  disabled={props.aiBusy}
+                  onClick={props.onIndexJobs}
+                >
+                  Index Jobs
+                </button>
+              </div>
+
+              <div class="mt-2 space-y-1">
+                <Show when={props.ollamaStatus}>
+                  <p class="text-[12px] text-mk-secondary">{props.ollamaStatus}</p>
+                </Show>
+                <Show when={props.embeddingStatus}>
+                  <p class="text-[12px] text-mk-secondary">{props.embeddingStatus}</p>
+                </Show>
+                <Show when={props.indexStatus}>
+                  <p class="text-[12px] text-mk-secondary">{props.indexStatus}</p>
+                </Show>
+              </div>
+
+              <div class="mt-4 border-t border-mk-separator pt-3">
+                <h4 class="text-[13px] font-semibold text-mk-text">Resume Embedding</h4>
+                <label class="block text-[12px] text-mk-secondary mt-2">
+                  Resume File Path (`.pdf`, `.docx`, `.txt`)
+                  <input
+                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                    value={props.resumeFilePath}
+                    onInput={(e) => props.onResumeFilePathChange(e.currentTarget.value)}
+                    placeholder="/Users/you/Documents/resume.pdf"
+                  />
+                </label>
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                    disabled={props.aiBusy}
+                    onClick={props.onUploadResumeFromPath}
+                  >
+                    Upload Resume
+                  </button>
+                  <button
+                    class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                    disabled={props.aiBusy || props.selectedResumeId === null}
+                    onClick={props.onIndexResume}
+                  >
+                    Index Selected Resume
+                  </button>
+                </div>
+
+                <div class="mt-2">
+                  <label class="text-[12px] text-mk-secondary">
+                    Resume Profiles
+                    <select
+                      class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                      value={props.selectedResumeId === null ? "" : String(props.selectedResumeId)}
+                      onChange={(e) => props.onSelectResume(Number(e.currentTarget.value))}
+                    >
+                      <option value="" disabled>Select a resume profile</option>
+                      <For each={props.resumes}>
+                        {(resume) => (
+                          <option value={resume.id}>
+                            {resume.name}{resume.is_active ? " (Active)" : ""}
+                          </option>
+                        )}
+                      </For>
+                    </select>
+                  </label>
+                </div>
+                <Show when={props.resumeStatus}>
+                  <p class="mt-2 text-[12px] text-mk-secondary">{props.resumeStatus}</p>
+                </Show>
+              </div>
+            </div>
+
             <p class="text-[12px] text-mk-tertiary">
               This panel is now the central home for all app configuration and upcoming advanced options.
             </p>

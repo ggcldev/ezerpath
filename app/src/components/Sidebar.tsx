@@ -1,8 +1,8 @@
 import { For, Show, Resource, type Component } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { CirclePlus, List, Settings2, Star, Trash2 } from "lucide-solid";
+import { Bot, CirclePlus, List, Settings2, Star, Trash2 } from "lucide-solid";
 
-export type View = "scan" | "jobs" | "watchlist";
+export type View = "scan" | "jobs" | "watchlist" | "ezer";
 
 export interface ScanRun {
   id: number;
@@ -27,6 +27,7 @@ interface SidebarProps {
 const navItems: { id: View; label: string; Icon: Component<{ class?: string }> }[] = [
   { id: "jobs", label: "All Jobs", Icon: List },
   { id: "watchlist", label: "Watchlist", Icon: Star },
+  { id: "ezer", label: "Ezer AI", Icon: Bot },
 ];
 
 function formatRunDate(raw: string): string {
