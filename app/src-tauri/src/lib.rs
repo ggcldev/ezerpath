@@ -19,11 +19,50 @@ use tokio::sync::Mutex;
 
 fn extract_top_n(message: &str, default_n: usize) -> usize {
     let lower = message.to_lowercase();
-    for token in lower.split(|c: char| !c.is_ascii_alphanumeric()) {
+    let tokens = lower
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>();
+
+    let parse_num = |token: &str| -> Option<usize> {
         if let Ok(n) = token.parse::<usize>() {
             if (1..=20).contains(&n) {
+                return Some(n);
+            }
+        }
+        None
+    };
+
+    // Prefer explicit asks like "top 10", "best 7", or "top10".
+    for (i, token) in tokens.iter().enumerate() {
+        if *token == "top" || *token == "best" {
+            for look_ahead in 1..=3 {
+                if let Some(next) = tokens.get(i + look_ahead) {
+                    if let Some(n) = parse_num(next) {
+                        return n;
+                    }
+                }
+            }
+        }
+        if token.starts_with("top") {
+            let suffix = token.trim_start_matches("top");
+            if let Some(n) = parse_num(suffix) {
                 return n;
             }
+        }
+        if token.starts_with("best") {
+            let suffix = token.trim_start_matches("best");
+            if let Some(n) = parse_num(suffix) {
+                return n;
+            }
+        }
+    }
+
+    // Fallback: first number found.
+    for token in tokens {
+        if let Some(n) = parse_num(token) {
+            return n;
         }
     }
     default_n
@@ -553,7 +592,7 @@ async fn ai_chat(
 
     let keyword = filters.as_ref().and_then(|f| f.keyword.clone());
     let watchlisted_only = filters.as_ref().and_then(|f| f.watchlisted_only).unwrap_or(false);
-    let days_ago = filters.as_ref().and_then(|f| f.days_ago).or(Some(30));
+    let days_ago = filters.as_ref().and_then(|f| f.days_ago);
     let jobs = state
         .db
         .get_jobs(keyword.as_deref(), watchlisted_only, days_ago)
