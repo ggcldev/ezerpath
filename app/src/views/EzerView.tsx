@@ -307,7 +307,7 @@ export default function EzerView() {
     <div ref={viewEl!} class="relative flex-1 flex flex-col min-h-0 min-w-0 bg-mk-bg">
       <div class="absolute top-0 left-0 right-0 h-8 z-10" onMouseDown={handleWindowDrag} />
 
-      <div class="flex-1 min-h-0 grid grid-cols-[240px_1fr]">
+      <div class="flex-1 min-h-0 grid grid-cols-[240px_minmax(0,1fr)]">
         <aside class="border-r border-mk-separator min-h-0 flex flex-col bg-mk-grouped-bg/35">
           <div class="px-3 py-3 border-b border-mk-separator">
             <div class="flex items-center gap-2">
@@ -374,7 +374,7 @@ export default function EzerView() {
         </aside>
 
         <section
-          class="min-h-0 flex flex-col relative"
+          class="min-h-0 min-w-0 flex flex-col relative"
           style={{ background: "color-mix(in oklab, var(--mk-bg) 85%, black 15%)" }}
         >
           <Show
@@ -429,23 +429,23 @@ export default function EzerView() {
               </div>
             }
           >
-            <div ref={messagesEl!} class="flex-1 min-h-0 overflow-auto px-6 py-5 space-y-4">
+            <div ref={messagesEl!} class="flex-1 min-h-0 overflow-auto px-6 py-4 space-y-2.5">
               <For each={messages()}>
                 {(m) => (
                   <div
                     ref={(el) => animateMessageEnter(el, m.role)}
-                    class={`max-w-[78%] rounded-2xl px-4 py-3 ${
+                    class={`max-w-[min(52%,30rem)] rounded-xl px-3 py-2 ${
                       m.role === "user"
                         ? "ml-auto bg-mk-green-dim border border-mk-green-dim"
                         : "bg-mk-grouped-bg border border-mk-separator"
                     }`}
                   >
-                    <p class="text-[11px] font-semibold text-mk-tertiary mb-1">
+                    <p class="text-[10px] font-semibold text-mk-tertiary mb-0.5">
                       {m.role === "user" ? "You" : m.role === "assistant" ? "Ezer" : "System"}
                     </p>
                     <Show
                       when={m.role === "assistant" && typingMessageId() === m.id && !typingDone()}
-                      fallback={<p class="text-[14px] leading-7 text-mk-text whitespace-pre-wrap break-words">{m.content}</p>}
+                      fallback={<p class="text-[13px] leading-[1.45] text-mk-text whitespace-pre-wrap break-words">{m.content}</p>}
                     >
                       <TypewriterText
                         text={m.content}
@@ -495,9 +495,9 @@ export default function EzerView() {
               </For>
 
               <Show when={sending()}>
-                <div class="max-w-[78%] rounded-2xl px-4 py-3 bg-mk-grouped-bg border border-mk-separator">
-                  <p class="text-[11px] font-semibold text-mk-tertiary mb-1">Ezer</p>
-                  <div class="inline-flex items-center gap-2 text-[13px] text-mk-secondary">
+                <div class="max-w-[min(52%,30rem)] rounded-xl px-3 py-2 bg-mk-grouped-bg border border-mk-separator">
+                  <p class="text-[10px] font-semibold text-mk-tertiary mb-0.5">Ezer</p>
+                  <div class="inline-flex items-center gap-2 text-[12px] text-mk-secondary">
                     <span>Ezer is thinking</span>
                     <span class="inline-flex items-center gap-1">
                       <span class="w-1.5 h-1.5 rounded-full bg-mk-tertiary animate-pulse" />
