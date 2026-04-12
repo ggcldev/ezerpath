@@ -573,6 +573,18 @@ impl Database {
         })
     }
 
+    pub fn maybe_set_ai_conversation_title(&self, conversation_id: i64, title: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE ai_conversations
+             SET title = ?1
+             WHERE id = ?2
+               AND (title = 'New Chat' OR title = 'Job Copilot Chat' OR TRIM(title) = '')",
+            params![title, conversation_id],
+        )?;
+        Ok(())
+    }
+
     pub fn list_ai_conversations(&self) -> Result<Vec<AiConversation>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(

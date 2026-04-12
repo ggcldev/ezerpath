@@ -29,6 +29,31 @@ fn extract_top_n(message: &str, default_n: usize) -> usize {
     default_n
 }
 
+fn chat_title_from_query(message: &str) -> String {
+    let normalized = message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if normalized.is_empty() {
+        return "New Chat".to_string();
+    }
+
+    // Keep titles short and readable for sidebar UX.
+    const MAX_CHARS: usize = 48;
+    if normalized.chars().count() <= MAX_CHARS {
+        return normalized;
+    }
+
+    let mut out = String::new();
+    for ch in normalized.chars().take(MAX_CHARS - 1) {
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
 fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Option<(String, Vec<AiJobCard>)> {
     let lower = message.to_lowercase();
     let asks_top = lower.contains("top") || lower.contains("best");
@@ -454,14 +479,21 @@ async fn ai_chat(
 ) -> Result<AiChatResponse, String> {
     let started = std::time::Instant::now();
     let now = chrono::Utc::now().to_rfc3339();
+    let suggested_title = chat_title_from_query(&message);
     let convo_id = match conversation_id {
         Some(id) => id,
         None => state
             .db
-            .create_ai_conversation(Some("Job Copilot Chat"), &now)
+            .create_ai_conversation(Some(&suggested_title), &now)
             .map_err(|e| e.to_string())?
             .id,
     };
+
+    // Backfill better titles for existing generic conversations.
+    state
+        .db
+        .maybe_set_ai_conversation_title(convo_id, &suggested_title)
+        .map_err(|e| e.to_string())?;
 
     state
         .db
