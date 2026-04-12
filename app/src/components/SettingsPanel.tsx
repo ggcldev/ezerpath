@@ -23,6 +23,7 @@ interface SettingsPanelProps {
   dark: boolean;
   onToggleTheme: () => void;
   aiConfig: AiRuntimeConfig;
+  ollamaModels: string[];
   aiBusy: boolean;
   ollamaStatus: string;
   embeddingStatus: string;
@@ -33,6 +34,7 @@ interface SettingsPanelProps {
   resumeStatus: string;
   onAiConfigChange: (next: AiRuntimeConfig) => void;
   onSaveAiConfig: () => void;
+  onRefreshOllamaModels: () => void;
   onCheckOllama: () => void;
   onCheckEmbedding: () => void;
   onIndexJobs: () => void;
@@ -157,11 +159,21 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                 </label>
                 <label class="text-[12px] text-mk-secondary">
                   Ollama Model
-                  <input
+                  <select
                     class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
                     value={props.aiConfig.ollama_model}
-                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, ollama_model: e.currentTarget.value })}
-                  />
+                    onChange={(e) => props.onAiConfigChange({ ...props.aiConfig, ollama_model: e.currentTarget.value })}
+                    disabled={props.ollamaModels.length === 0}
+                  >
+                    <Show
+                      when={props.ollamaModels.length > 0}
+                      fallback={<option value="">No models found</option>}
+                    >
+                      <For each={props.ollamaModels}>
+                        {(model) => <option value={model}>{model}</option>}
+                      </For>
+                    </Show>
+                  </select>
                 </label>
                 <label class="text-[12px] text-mk-secondary">
                   Embedding Service URL
@@ -224,6 +236,13 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                   onClick={props.onSaveAiConfig}
                 >
                   Save AI Settings
+                </button>
+                <button
+                  class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                  disabled={props.aiBusy}
+                  onClick={props.onRefreshOllamaModels}
+                >
+                  Refresh Models
                 </button>
                 <button
                   class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"

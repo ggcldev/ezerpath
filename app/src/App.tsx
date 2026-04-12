@@ -89,6 +89,7 @@ function App() {
   const [ollamaStatus, setOllamaStatus] = createSignal("");
   const [embeddingStatus, setEmbeddingStatus] = createSignal("");
   const [indexStatus, setIndexStatus] = createSignal("");
+  const [ollamaModels, setOllamaModels] = createSignal<string[]>([]);
   const [resumes, setResumes] = createSignal<ResumeProfile[]>([]);
   const [selectedResumeId, setSelectedResumeId] = createSignal<number | null>(null);
   const [resumeFilePath, setResumeFilePath] = createSignal("");
@@ -220,6 +221,20 @@ function App() {
     }
   };
 
+  const loadOllamaModels = async () => {
+    try {
+      const models = await invoke<string[]>("ai_list_ollama_models");
+      setOllamaModels(models);
+      const current = aiConfig().ollama_model;
+      if (models.length > 0 && !models.includes(current)) {
+        setAiConfig({ ...aiConfig(), ollama_model: models[0] });
+      }
+    } catch (e: any) {
+      setOllamaModels([]);
+      setOllamaStatus(`Failed to load model list: ${String(e)}`);
+    }
+  };
+
   const loadResumes = async () => {
     try {
       const items = await invoke<ResumeProfile[]>("list_resumes");
@@ -245,6 +260,7 @@ function App() {
   const handleOpenSettings = async () => {
     setSettingsOpen(true);
     await loadAiConfig();
+    await loadOllamaModels();
     await loadResumes();
   };
 
@@ -258,6 +274,7 @@ function App() {
     withAiBusy(async () => {
       const health = await invoke<{ ok: boolean; message: string; model_count: number }>("ai_health_check");
       setOllamaStatus(`${health.message} Models: ${health.model_count}`);
+      await loadOllamaModels();
       toast.success("Ollama check completed.");
     });
 
@@ -387,6 +404,7 @@ function App() {
         dark={dark()}
         onToggleTheme={toggleTheme}
         aiConfig={aiConfig()}
+        ollamaModels={ollamaModels()}
         aiBusy={aiBusy()}
         ollamaStatus={ollamaStatus()}
         embeddingStatus={embeddingStatus()}
@@ -397,6 +415,7 @@ function App() {
         resumeStatus={resumeStatus()}
         onAiConfigChange={setAiConfig}
         onSaveAiConfig={saveAiConfig}
+        onRefreshOllamaModels={() => void loadOllamaModels()}
         onCheckOllama={checkOllama}
         onCheckEmbedding={checkEmbedding}
         onIndexJobs={indexJobs}

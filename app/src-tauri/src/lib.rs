@@ -93,20 +93,102 @@ fn chat_title_from_query(message: &str) -> String {
     out
 }
 
-fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Option<(String, Vec<AiJobCard>)> {
+fn sanitize_text(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+    // Lightweight HTML-like tag strip.
+    let mut out = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    for ch in raw.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn short_description(text: &str) -> String {
+    let cleaned = sanitize_text(text);
+    if cleaned.is_empty() {
+        return "No short description available from this scan.".to_string();
+    }
+    // Prefer first sentence if available.
+    for sep in [". ", "! ", "? ", ".\n", "!\n", "?\n"] {
+        if let Some((first, _)) = cleaned.split_once(sep) {
+            let first = first.trim();
+            if first.len() >= 24 {
+                return format!("{first}.");
+            }
+        }
+    }
+    let max = 170usize;
+    if cleaned.chars().count() <= max {
+        cleaned
+    } else {
+        let mut s = String::new();
+        for ch in cleaned.chars().take(max - 1) {
+            s.push(ch);
+        }
+        s.push('…');
+        s
+    }
+}
+
+fn wants_descriptions(message: &str) -> bool {
     let lower = message.to_lowercase();
-    let asks_top = lower.contains("top") || lower.contains("best");
-    let asks_jobs = lower.contains("job");
-    if !(asks_top && asks_jobs) {
-        return None;
+    lower.contains("descript")
+        || lower.contains("short description")
+        || lower.contains("summary")
+        || lower.contains("summarize")
+        || lower.contains("details")
+}
+
+fn is_explicit_top_jobs_request(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    let has_top_marker = lower.contains("top") || lower.contains("best");
+    if !has_top_marker {
+        return false;
     }
 
+    let domain_terms = [
+        "job", "jobs", "listing", "listings", "scan result", "scan results",
+        "result", "results", "role", "roles", "position", "positions",
+    ];
+    let has_domain = domain_terms.iter().any(|t| lower.contains(t));
+    if !has_domain {
+        return false;
+    }
+
+    // Avoid hijacking vague/meta messages that only mention "top 10".
+    let action_terms = [
+        "show", "give", "provide", "list", "recommend", "suggest",
+        "find", "what are", "which", "for me",
+    ];
+    action_terms.iter().any(|t| lower.contains(t))
+}
+
+fn scoped_jobs_for_message(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Vec<Job> {
+    let lower = message.to_lowercase();
     let mut scoped: Vec<Job> = all_jobs.to_vec();
     if lower.contains("latest scan") || lower.contains("last scan") {
         if let Some(latest_run_id) = runs.first().map(|r| r.id) {
             scoped.retain(|j| j.run_id == Some(latest_run_id));
         }
     }
+    scoped.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
+    scoped
+}
+
+fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Option<(String, Vec<AiJobCard>)> {
+    if !is_explicit_top_jobs_request(message) {
+        return None;
+    }
+
+    let scoped = scoped_jobs_for_message(message, all_jobs, runs);
     if scoped.is_empty() {
         return Some((
             "I checked your current app data and there are no jobs in this scope yet.\n\
@@ -115,8 +197,8 @@ Try running a new scan or relaxing your filters/keywords.".to_string(),
         ));
     }
 
-    scoped.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
     let n = extract_top_n(message, 3);
+    let include_descriptions = wants_descriptions(message);
     let top = scoped.into_iter().take(n).collect::<Vec<_>>();
     let mut lines = vec![format!("Top {} jobs from your app data:", top.len())];
     let cards = top
@@ -141,6 +223,73 @@ Try running a new scan or relaxing your filters/keywords.".to_string(),
         .collect::<Vec<_>>();
     for (i, job) in top.iter().enumerate() {
         lines.push(format!("{}. {}", i + 1, job.title));
+        if include_descriptions {
+            lines.push(format!("   - {}", short_description(&job.summary)));
+        }
+    }
+    lines.push("Open any card below for full details.".to_string());
+    Some((lines.join("\n"), cards))
+}
+
+fn try_local_descriptions_followup_reply(
+    message: &str,
+    recent: &[AiMessage],
+    all_jobs: &[Job],
+    runs: &[ScanRun],
+) -> Option<(String, Vec<AiJobCard>)> {
+    let lower = message.to_lowercase();
+    let asks_description = wants_descriptions(message)
+        || (lower.contains("where") && lower.contains("description"));
+    if !asks_description {
+        return None;
+    }
+
+    // Find last user query that asked for top/best jobs.
+    let last_top_user_query = recent
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && {
+            let t = m.content.to_lowercase();
+            (t.contains("top") || t.contains("best")) && t.contains("job")
+        })
+        .map(|m| m.content.clone());
+
+    let base_query = last_top_user_query.unwrap_or_else(|| message.to_string());
+    let scoped = scoped_jobs_for_message(&base_query, all_jobs, runs);
+    if scoped.is_empty() {
+        return Some((
+            "I checked your current app data and there are no jobs in this scope yet.".to_string(),
+            Vec::new(),
+        ));
+    }
+
+    let n = extract_top_n(&base_query, 5);
+    let top = scoped.into_iter().take(n).collect::<Vec<_>>();
+    let cards = top
+        .iter()
+        .map(|job| AiJobCard {
+            job_id: job.id.unwrap_or_default(),
+            title: job.title.clone(),
+            company: if job.company.is_empty() {
+                "Unknown company".to_string()
+            } else {
+                job.company.clone()
+            },
+            pay: if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() },
+            posted_at: if job.posted_at.is_empty() {
+                "-".to_string()
+            } else {
+                job.posted_at.clone()
+            },
+            url: job.url.clone(),
+            logo_url: job.company_logo_url.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut lines = vec![format!("Short descriptions for top {} jobs:", top.len())];
+    for (i, job) in top.iter().enumerate() {
+        lines.push(format!("{}. {}", i + 1, job.title));
+        lines.push(format!("   - {}", short_description(&job.summary)));
     }
     lines.push("Open any card below for full details.".to_string());
     Some((lines.join("\n"), cards))
@@ -166,7 +315,29 @@ fn is_prompt_injection_attempt(message: &str) -> bool {
     patterns.iter().any(|p| lower.contains(p))
 }
 
-fn is_app_scope_query(message: &str) -> bool {
+fn has_recent_app_context(history: &[AiMessage]) -> bool {
+    let app_terms = [
+        "job", "jobs", "scan", "keyword", "watchlist", "resume", "match", "summary",
+        "posted", "salary", "listing", "listings", "top", "best", "ezer",
+        "jobs from your app data", "open any card below",
+    ];
+    history.iter().rev().take(8).any(|m| {
+        let t = m.content.to_lowercase();
+        app_terms.iter().any(|k| t.contains(k))
+    })
+}
+
+fn is_follow_up_query(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    let followups = [
+        "which one", "what about", "best one", "top one", "can you", "where", "why",
+        "how about", "more details", "description", "summarize", "explain", "compare",
+        "that one", "this one",
+    ];
+    followups.iter().any(|f| lower.contains(f))
+}
+
+fn is_app_scope_query(message: &str, history: &[AiMessage]) -> bool {
     let lower = message.to_lowercase();
     if lower.trim().is_empty() {
         return true;
@@ -194,6 +365,11 @@ fn is_app_scope_query(message: &str) -> bool {
         return true;
     }
 
+    // Allow short follow-ups when conversation is clearly within app context.
+    if is_follow_up_query(message) && has_recent_app_context(history) {
+        return true;
+    }
+
     // Default conservative behavior: if we don't detect app intent, block.
     false
 }
@@ -210,6 +386,14 @@ fn response_violates_app_scope(reply: &str) -> bool {
         "i can browse",
         "i can't browse",
         "real-time access",
+        "external website",
+        "external websites",
+        "job board",
+        "job boards",
+        "linkedin",
+        "indeed",
+        "monster",
+        "i need a little more information",
     ];
     bad_phrases.iter().any(|p| lower.contains(p))
 }
@@ -363,6 +547,12 @@ async fn set_ai_runtime_config(state: State<'_, AppState>, config: AiRuntimeConf
 async fn ai_health_check(state: State<'_, AppState>) -> Result<AiHealth, String> {
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
     state.ollama.health_check(&cfg).await
+}
+
+#[tauri::command]
+async fn ai_list_ollama_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
+    state.ollama.list_models(&cfg).await
 }
 
 #[tauri::command]
@@ -539,6 +729,8 @@ async fn ai_chat(
         .append_ai_message(convo_id, "user", &message, "{}", &now)
         .map_err(|e| e.to_string())?;
 
+    let history = state.db.get_ai_messages(convo_id).map_err(|e| e.to_string())?;
+
     if is_prompt_injection_attempt(&message) {
         let reply = "I can’t follow that request. I only operate within this app’s scope and policy.".to_string();
         let latency = started.elapsed().as_millis() as i64;
@@ -560,7 +752,7 @@ async fn ai_chat(
         });
     }
 
-    if !is_app_scope_query(&message) {
+    if !is_app_scope_query(&message, &history) {
         let reply = out_of_scope_reply();
         let latency = started.elapsed().as_millis() as i64;
         let _ = state.db.log_ai_run("chat", latency, "blocked_scope", Some("out_of_scope_query"), &now);
@@ -582,7 +774,6 @@ async fn ai_chat(
     }
 
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
-    let history = state.db.get_ai_messages(convo_id).map_err(|e| e.to_string())?;
     let limit_history = 12usize;
     let recent = if history.len() > limit_history {
         history[(history.len() - limit_history)..].to_vec()
@@ -599,6 +790,26 @@ async fn ai_chat(
         .map_err(|e| e.to_string())?;
 
     let runs = state.db.get_runs().map_err(|e| e.to_string())?;
+    // Handle follow-up description requests first so they don't get shadowed by generic top-N replies.
+    if let Some((local_reply, cards)) = try_local_descriptions_followup_reply(&message, &recent, &jobs, &runs) {
+        let latency = started.elapsed().as_millis() as i64;
+        let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
+        state
+            .db
+            .append_ai_message(
+                convo_id,
+                "assistant",
+                &local_reply,
+                &assistant_meta("local", None, Some(&cards)),
+                &now,
+            )
+            .map_err(|e| e.to_string())?;
+        return Ok(AiChatResponse {
+            conversation_id: convo_id,
+            reply: local_reply,
+            cards: if cards.is_empty() { None } else { Some(cards) },
+        });
+    }
     if let Some((local_reply, cards)) = try_local_top_jobs_reply(&message, &jobs, &runs) {
         let latency = started.elapsed().as_millis() as i64;
         let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
@@ -662,7 +873,31 @@ async fn ai_chat(
         Err(err) => {
             let latency = started.elapsed().as_millis() as i64;
             let _ = state.db.log_ai_run("chat", latency, "failed", Some(&err), &now);
-            return Err(err);
+            let fallback = format!(
+                "I can’t reach your local Ollama server right now.\n\
+Please start/restart Ollama, then try again.\n\n\
+Quick checks:\n\
+1. Run `ollama serve`\n\
+2. Keep Ollama URL as `{}`\n\
+3. Ensure your selected model is installed (`ollama list`)\n\
+4. Retry your prompt",
+                cfg.ollama_base_url
+            );
+            state
+                .db
+                .append_ai_message(
+                    convo_id,
+                    "assistant",
+                    &fallback,
+                    &assistant_meta("local", Some("ollama_unreachable"), None),
+                    &now,
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(AiChatResponse {
+                conversation_id: convo_id,
+                reply: fallback,
+                cards: None,
+            });
         }
     };
     if response_violates_app_scope(&reply) {
@@ -827,6 +1062,7 @@ pub fn run() {
             get_ai_runtime_config,
             set_ai_runtime_config,
             ai_health_check,
+            ai_list_ollama_models,
             ai_embedding_health_check,
             upload_resume,
             upload_resume_from_file,

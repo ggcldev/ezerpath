@@ -2,6 +2,7 @@ use crate::ai::{AiHealth, AiRuntimeConfig};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::time::timeout;
 
 #[derive(Clone)]
 pub struct OllamaClient {
@@ -59,12 +60,18 @@ impl OllamaClient {
     pub async fn health_check(&self, cfg: &AiRuntimeConfig) -> Result<AiHealth, String> {
         let base = cfg.ollama_base_url.trim_end_matches('/');
         let url = format!("{base}/api/tags");
-        let resp = self.client.get(url).send().await.map_err(|e| e.to_string())?;
+        let resp = timeout(Duration::from_millis(cfg.timeout_ms), self.client.get(url).send())
+            .await
+            .map_err(|_| format!("Ollama health check timed out after {}ms", cfg.timeout_ms))?
+            .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("Ollama health check failed: HTTP {}", resp.status()));
         }
 
-        let payload: OllamaTagsResponse = resp.json().await.map_err(|e| e.to_string())?;
+        let payload: OllamaTagsResponse = timeout(Duration::from_millis(cfg.timeout_ms), resp.json())
+            .await
+            .map_err(|_| format!("Ollama health response parse timed out after {}ms", cfg.timeout_ms))?
+            .map_err(|e| e.to_string())?;
         let model_count = payload.models.len();
         let has_selected_model = payload.models.iter().any(|m| m.name == cfg.ollama_model);
 
@@ -82,6 +89,26 @@ impl OllamaClient {
         })
     }
 
+    pub async fn list_models(&self, cfg: &AiRuntimeConfig) -> Result<Vec<String>, String> {
+        let base = cfg.ollama_base_url.trim_end_matches('/');
+        let url = format!("{base}/api/tags");
+        let resp = timeout(Duration::from_millis(cfg.timeout_ms), self.client.get(url).send())
+            .await
+            .map_err(|_| format!("Ollama model list timed out after {}ms", cfg.timeout_ms))?
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("Ollama model list failed: HTTP {}", resp.status()));
+        }
+        let payload: OllamaTagsResponse = timeout(Duration::from_millis(cfg.timeout_ms), resp.json())
+            .await
+            .map_err(|_| format!("Ollama model list parse timed out after {}ms", cfg.timeout_ms))?
+            .map_err(|e| e.to_string())?;
+        let mut names = payload.models.into_iter().map(|m| m.name).collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
     pub async fn chat(&self, cfg: &AiRuntimeConfig, messages: Vec<ChatMessage>) -> Result<String, String> {
         if messages.is_empty() {
             return Err("No messages provided to Ollama chat".to_string());
@@ -97,11 +124,20 @@ impl OllamaClient {
                 num_predict: cfg.max_tokens,
             },
         };
-        let resp = self.client.post(url).json(&req).send().await.map_err(|e| e.to_string())?;
+        let resp = timeout(
+            Duration::from_millis(cfg.timeout_ms),
+            self.client.post(url).json(&req).send(),
+        )
+        .await
+        .map_err(|_| format!("Ollama chat timed out after {}ms", cfg.timeout_ms))?
+        .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("Ollama chat failed: HTTP {}", resp.status()));
         }
-        let payload: OllamaChatResponse = resp.json().await.map_err(|e| e.to_string())?;
+        let payload: OllamaChatResponse = timeout(Duration::from_millis(cfg.timeout_ms), resp.json())
+            .await
+            .map_err(|_| format!("Ollama chat response parse timed out after {}ms", cfg.timeout_ms))?
+            .map_err(|e| e.to_string())?;
         Ok(payload.message.content)
     }
 }
