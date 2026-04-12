@@ -81,6 +81,7 @@ pub struct AiMessage {
     pub content: String,
     pub created_at: String,
     pub meta_json: String,
+    pub linked_job_ids_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
