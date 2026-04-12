@@ -1,5 +1,5 @@
 import { createSignal, For, Show, Accessor, Resource, Setter, onMount } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X } from "lucide-solid";
 import toast from "solid-toast";
@@ -12,6 +12,25 @@ interface CrawlStats {
   found: number;
   new: number;
   pages: number;
+}
+
+const PAGES_PER_KEYWORD = 5;
+
+type ScanProgress =
+  | { kind: "started"; run_id: number; total_keywords: number; keywords: string[] }
+  | { kind: "keyword_started"; keyword: string; index: number; total: number }
+  | { kind: "page"; keyword: string; page: number; found: number }
+  | { kind: "keyword_completed"; keyword: string; found: number; new: number; pages: number }
+  | { kind: "completed"; run_id: number; total_found: number; total_new: number }
+  | { kind: "failed"; run_id: number; error: string };
+
+interface ProgressSnapshot {
+  totalKeywords: number;
+  keywordIndex: number;
+  currentKeyword: string;
+  currentPage: number;
+  liveFound: number;
+  liveNew: number;
 }
 
 interface ScanViewProps {
@@ -30,6 +49,7 @@ interface ScanViewProps {
 
 export default function ScanView(props: ScanViewProps) {
   const [newKeyword, setNewKeyword] = createSignal("");
+  const [progress, setProgress] = createSignal<ProgressSnapshot | null>(null);
   let viewEl!: HTMLDivElement;
   const handleWindowDrag = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;
@@ -37,14 +57,88 @@ export default function ScanView(props: ScanViewProps) {
     void getCurrentWindow().startDragging();
   };
 
+  // Map a ProgressSnapshot to a 0..1 fraction. Each keyword owns an equal slice
+  // of the bar; within a keyword we advance proportionally to the page count.
+  const progressFraction = (): number => {
+    const p = progress();
+    if (!p || p.totalKeywords === 0) return 0;
+    const perKeyword = 1 / p.totalKeywords;
+    const within = Math.min(p.currentPage, PAGES_PER_KEYWORD) / PAGES_PER_KEYWORD;
+    return Math.min(1, perKeyword * (p.keywordIndex + within));
+  };
+
   const handleCrawl = async () => {
     const loadingToast = toast.loading("Scanning jobs...");
     props.setCrawling(true);
     props.setCrawlResult(null);
     props.setCrawlError("");
+    setProgress(null);
     props.onScanStart();
+
+    const channel = new Channel<ScanProgress>();
+    let liveFound = 0;
+    let liveNew = 0;
+
+    channel.onmessage = (msg) => {
+      switch (msg.kind) {
+        case "started":
+          setProgress({
+            totalKeywords: msg.total_keywords,
+            keywordIndex: 0,
+            currentKeyword: msg.keywords[0] ?? "",
+            currentPage: 0,
+            liveFound: 0,
+            liveNew: 0,
+          });
+          break;
+        case "keyword_started":
+          setProgress((prev) => ({
+            totalKeywords: prev?.totalKeywords ?? msg.total,
+            keywordIndex: msg.index,
+            currentKeyword: msg.keyword,
+            currentPage: 0,
+            liveFound,
+            liveNew,
+          }));
+          break;
+        case "page":
+          setProgress((prev) =>
+            prev
+              ? { ...prev, currentKeyword: msg.keyword, currentPage: msg.page, liveFound: liveFound + msg.found }
+              : prev
+          );
+          break;
+        case "keyword_completed":
+          liveFound += msg.found;
+          liveNew += msg.new;
+          setProgress((prev) =>
+            prev ? { ...prev, currentPage: msg.pages, liveFound, liveNew } : prev
+          );
+          break;
+        case "completed":
+          setProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  keywordIndex: prev.totalKeywords,
+                  currentPage: PAGES_PER_KEYWORD,
+                  liveFound: Number(msg.total_found),
+                  liveNew: Number(msg.total_new),
+                }
+              : prev
+          );
+          break;
+        case "failed":
+          // Error handling lands in the catch below; nothing extra to do here.
+          break;
+      }
+    };
+
     try {
-      const stats = await invoke<CrawlStats[]>("crawl_jobs", { days: props.dateRange() });
+      const stats = await invoke<CrawlStats[]>("crawl_jobs", {
+        days: props.dateRange(),
+        onProgress: channel,
+      });
       props.setCrawlResult(stats);
       props.onScanComplete();
       const found = stats.reduce((sum, s) => sum + s.found, 0);
@@ -56,6 +150,7 @@ export default function ScanView(props: ScanViewProps) {
       toast.error(`Scan failed: ${message}`, { id: loadingToast });
     }
     props.setCrawling(false);
+    setProgress(null);
   };
 
   const handleAddKeyword = async () => {
@@ -203,13 +298,41 @@ export default function ScanView(props: ScanViewProps) {
                   <div class="absolute inset-0 rounded-full border-[1.5px] border-mk-separator" />
                   <div class="absolute inset-0 rounded-full border-[1.5px] border-mk-cyan border-t-transparent animate-spin" />
                 </div>
-                <div>
-                  <p class="text-[13px] font-medium text-mk-text">Scanning OnlineJobs.ph</p>
-                  <p class="text-[12px] text-mk-tertiary mt-0.5">This may take a moment.</p>
+                <div class="min-w-0 flex-1">
+                  <p class="text-[13px] font-medium text-mk-text">
+                    <Show when={progress()} fallback="Starting scan…">
+                      {(p) => (
+                        <>
+                          Scanning <span class="text-mk-cyan">{p().currentKeyword || "…"}</span>
+                          <Show when={p().currentPage > 0}>
+                            <span class="text-mk-tertiary">
+                              {" "}— page {p().currentPage}/{PAGES_PER_KEYWORD}
+                            </span>
+                          </Show>
+                        </>
+                      )}
+                    </Show>
+                  </p>
+                  <p class="text-[11px] text-mk-tertiary mt-0.5">
+                    <Show when={progress()} fallback="Connecting to OnlineJobs.ph…">
+                      {(p) => (
+                        <>
+                          Keyword {Math.min(p().keywordIndex + 1, p().totalKeywords)}/{p().totalKeywords}
+                          <span class="mx-1">·</span>
+                          {p().liveFound} found
+                          <span class="mx-1">·</span>
+                          {p().liveNew} new
+                        </>
+                      )}
+                    </Show>
+                  </p>
                 </div>
               </div>
               <div class="mt-3 h-[3px] bg-mk-fill rounded-full overflow-hidden">
-                <div class="h-full bg-mk-cyan rounded-full animate-pulse" style="width: 55%" />
+                <div
+                  class="h-full bg-mk-cyan rounded-full transition-[width] duration-300 ease-out"
+                  style={{ width: `${Math.max(4, progressFraction() * 100)}%` }}
+                />
               </div>
             </div>
           </Show>

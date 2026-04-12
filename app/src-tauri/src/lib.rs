@@ -11,10 +11,11 @@ use ai::{
     EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult, ResumeProfile,
 };
 use ai::sentence_service::SentenceServiceClient;
-use crawler::{Crawler, CrawlStats, JobDetailsPayload};
-use db::{parse_pay, Database, Job, ScanRun};
+use crawler::{Crawler, CrawlStats, JobDetailsPayload, ScanProgress};
+use db::{parse_pay, AiRunLog, Database, Job, ScanRun};
 use std::cmp::Ordering;
 use std::sync::Arc;
+use tauri::ipc::Channel;
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
@@ -609,8 +610,11 @@ struct AppState {
     crawl_lock: Mutex<()>,
 }
 
-#[tauri::command]
-async fn crawl_jobs(state: State<'_, AppState>, days: Option<u32>) -> Result<Vec<CrawlStats>, String> {
+async fn run_crawl_inner(
+    state: &AppState,
+    days: Option<u32>,
+    on_progress: Option<&Channel<ScanProgress>>,
+) -> Result<Vec<CrawlStats>, String> {
     let _crawl_guard = state
         .crawl_lock
         .try_lock()
@@ -621,22 +625,71 @@ async fn crawl_jobs(state: State<'_, AppState>, days: Option<u32>) -> Result<Vec
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let keywords_str = keywords.join(", ");
-    let run_id = state.db.insert_run(&keywords_str, &started_at).map_err(|e| e.to_string())?;
+    let run_id = state
+        .db
+        .insert_run(&keywords_str, &started_at)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ch) = on_progress {
+        let _ = ch.send(ScanProgress::Started {
+            run_id,
+            total_keywords: keywords.len(),
+            keywords: keywords.clone(),
+        });
+    }
 
     let mut all_stats: Vec<CrawlStats> = Vec::new();
     let mut total_found: i64 = 0;
     let mut total_new: i64 = 0;
-    for kw in &keywords {
-        match state.crawler.crawl_keyword(kw, &state.db, date_days, run_id).await {
+
+    for (idx, kw) in keywords.iter().enumerate() {
+        if let Some(ch) = on_progress {
+            let _ = ch.send(ScanProgress::KeywordStarted {
+                keyword: kw.clone(),
+                index: idx,
+                total: keywords.len(),
+            });
+        }
+
+        match state
+            .crawler
+            .crawl_keyword(kw, &state.db, date_days, run_id, on_progress)
+            .await
+        {
             Ok(stats) => {
                 total_found += stats.found as i64;
                 total_new += stats.new as i64;
+
+                if let Some(ch) = on_progress {
+                    let _ = ch.send(ScanProgress::KeywordCompleted {
+                        keyword: kw.clone(),
+                        found: stats.found,
+                        new: stats.new,
+                        pages: stats.pages,
+                    });
+                }
+
                 all_stats.push(stats);
             }
             Err(err) => {
                 let finished_at = chrono::Utc::now().to_rfc3339();
-                if let Err(mark_err) = state.db.fail_run(run_id, total_found, total_new, &err, &finished_at) {
-                    return Err(format!("{err} (failed to mark run failed: {mark_err})"));
+                if let Err(mark_err) =
+                    state.db.fail_run(run_id, total_found, total_new, &err, &finished_at)
+                {
+                    let combined = format!("{err} (failed to mark run failed: {mark_err})");
+                    if let Some(ch) = on_progress {
+                        let _ = ch.send(ScanProgress::Failed {
+                            run_id,
+                            error: combined.clone(),
+                        });
+                    }
+                    return Err(combined);
+                }
+                if let Some(ch) = on_progress {
+                    let _ = ch.send(ScanProgress::Failed {
+                        run_id,
+                        error: err.clone(),
+                    });
                 }
                 return Err(err);
             }
@@ -644,9 +697,29 @@ async fn crawl_jobs(state: State<'_, AppState>, days: Option<u32>) -> Result<Vec
     }
 
     let finished_at = chrono::Utc::now().to_rfc3339();
-    state.db.complete_run(run_id, total_found, total_new, &finished_at).map_err(|e| e.to_string())?;
+    state
+        .db
+        .complete_run(run_id, total_found, total_new, &finished_at)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(ch) = on_progress {
+        let _ = ch.send(ScanProgress::Completed {
+            run_id,
+            total_found,
+            total_new,
+        });
+    }
 
     Ok(all_stats)
+}
+
+#[tauri::command]
+async fn crawl_jobs(
+    state: State<'_, AppState>,
+    days: Option<u32>,
+    on_progress: Channel<ScanProgress>,
+) -> Result<Vec<CrawlStats>, String> {
+    run_crawl_inner(state.inner(), days, Some(&on_progress)).await
 }
 
 #[tauri::command]
@@ -1263,7 +1336,7 @@ async fn ai_start_scan_with_keywords(
     for kw in &keywords {
         state.db.add_keyword(kw).map_err(|e| e.to_string())?;
     }
-    crawl_jobs(state, days).await
+    run_crawl_inner(state.inner(), days, None).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

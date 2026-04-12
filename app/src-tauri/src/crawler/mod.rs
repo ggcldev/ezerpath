@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::ipc::Channel;
 
 const BASE_URL: &str = "https://www.onlinejobs.ph/jobseekers/jobsearch";
 const SITE_BASE: &str = "https://www.onlinejobs.ph";
@@ -85,7 +86,14 @@ impl Crawler {
         Ok(Self { client })
     }
 
-    pub async fn crawl_keyword(&self, keyword: &str, db: &Arc<Database>, days: u32, run_id: i64) -> Result<CrawlStats, String> {
+    pub async fn crawl_keyword(
+        &self,
+        keyword: &str,
+        db: &Arc<Database>,
+        days: u32,
+        run_id: i64,
+        on_progress: Option<&Channel<ScanProgress>>,
+    ) -> Result<CrawlStats, String> {
         let mut stats = CrawlStats { keyword: keyword.to_string(), found: 0, new: 0, pages: 0 };
         let encoded = urlencoding::encode(keyword);
 
@@ -130,6 +138,15 @@ impl Crawler {
                     stats.new += 1;
                 }
             }
+
+            emit_progress(
+                on_progress,
+                ScanProgress::Page {
+                    keyword: keyword.to_string(),
+                    page: page_num + 1,
+                    found: stats.found,
+                },
+            );
 
             tokio::time::sleep(CRAWL_DELAY).await;
         }
@@ -298,6 +315,48 @@ pub struct CrawlStats {
     pub found: usize,
     pub new: usize,
     pub pages: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScanProgress {
+    Started {
+        run_id: i64,
+        total_keywords: usize,
+        keywords: Vec<String>,
+    },
+    KeywordStarted {
+        keyword: String,
+        index: usize,
+        total: usize,
+    },
+    Page {
+        keyword: String,
+        page: usize,
+        found: usize,
+    },
+    KeywordCompleted {
+        keyword: String,
+        found: usize,
+        new: usize,
+        pages: usize,
+    },
+    Completed {
+        run_id: i64,
+        total_found: i64,
+        total_new: i64,
+    },
+    Failed {
+        run_id: i64,
+        error: String,
+    },
+}
+
+fn emit_progress(channel: Option<&Channel<ScanProgress>>, payload: ScanProgress) {
+    if let Some(ch) = channel {
+        // Best-effort: a closed channel just means the frontend went away.
+        let _ = ch.send(payload);
+    }
 }
 
 fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
