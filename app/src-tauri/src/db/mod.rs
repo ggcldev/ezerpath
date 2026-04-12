@@ -514,13 +514,21 @@ impl Database {
         }
         let conn = self.conn()?;
         let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let order_cases: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| format!("WHEN ? THEN {}", idx))
+            .collect();
         let query = format!(
             "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
              FROM jobs WHERE id IN ({})
-             ORDER BY scraped_at DESC",
-            placeholders.join(",")
+             ORDER BY CASE id {} ELSE {} END",
+            placeholders.join(","),
+            order_cases.join(" "),
+            ids.len()
         );
-        let bind_values: Vec<Value> = ids.iter().map(|id| Value::Integer(*id)).collect();
+        let mut bind_values: Vec<Value> = ids.iter().map(|id| Value::Integer(*id)).collect();
+        bind_values.extend(ids.iter().map(|id| Value::Integer(*id)));
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
         let mut jobs = Vec::new();
@@ -546,7 +554,34 @@ impl Database {
                 bind_values.push(Value::Text(format!("%{}%", t.to_lowercase())));
             }
         }
-        query.push_str(" ORDER BY salary_min DESC LIMIT ?");
+        // Ranking normalization:
+        // - Convert hourly rates to monthly equivalent (160h / month)
+        // - Convert PHP to approximate USD for cross-currency ordering
+        query.push_str(
+            " ORDER BY
+             CASE UPPER(COALESCE(salary_currency, ''))
+                 WHEN 'PHP' THEN
+                     (CASE LOWER(COALESCE(salary_period, ''))
+                         WHEN 'hourly' THEN salary_min * 160.0
+                         WHEN 'monthly' THEN salary_min
+                         ELSE salary_min
+                     END) / 55.0
+                 WHEN 'USD' THEN
+                     CASE LOWER(COALESCE(salary_period, ''))
+                         WHEN 'hourly' THEN salary_min * 160.0
+                         WHEN 'monthly' THEN salary_min
+                         ELSE salary_min
+                     END
+                 ELSE
+                     CASE LOWER(COALESCE(salary_period, ''))
+                         WHEN 'hourly' THEN salary_min * 160.0
+                         WHEN 'monthly' THEN salary_min
+                         ELSE salary_min
+                     END
+             END DESC,
+             salary_min DESC
+             LIMIT ?"
+        );
         bind_values.push(Value::Integer(limit as i64));
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
@@ -1032,5 +1067,79 @@ mod tests {
         let filtered = db.get_jobs(None, false, Some(1)).expect("filtered");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].source_id, "recent");
+    }
+
+    #[test]
+    fn get_jobs_by_ids_preserves_input_order() {
+        let tmp = tempdir().expect("tempdir");
+        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("run");
+
+        let mut a = mk_job("one", (Utc::now() - Duration::days(2)).to_rfc3339());
+        a.title = "Job One".to_string();
+        db.insert_job(&a, run).expect("insert one");
+
+        let mut b = mk_job("two", Utc::now().to_rfc3339());
+        b.title = "Job Two".to_string();
+        db.insert_job(&b, run).expect("insert two");
+
+        let mut c = mk_job("three", (Utc::now() - Duration::days(1)).to_rfc3339());
+        c.title = "Job Three".to_string();
+        db.insert_job(&c, run).expect("insert three");
+
+        let jobs = db.get_jobs(None, false, None).expect("jobs");
+        let id_one = jobs
+            .iter()
+            .find(|j| j.source_id == "one")
+            .and_then(|j| j.id)
+            .expect("id one");
+        let id_two = jobs
+            .iter()
+            .find(|j| j.source_id == "two")
+            .and_then(|j| j.id)
+            .expect("id two");
+        let id_three = jobs
+            .iter()
+            .find(|j| j.source_id == "three")
+            .and_then(|j| j.id)
+            .expect("id three");
+
+        let ordered = db
+            .get_jobs_by_ids(&[id_two, id_one, id_three])
+            .expect("ordered jobs");
+        let ordered_ids: Vec<i64> = ordered.into_iter().filter_map(|j| j.id).collect();
+        assert_eq!(ordered_ids, vec![id_two, id_one, id_three]);
+    }
+
+    #[test]
+    fn top_paying_jobs_ranking_normalizes_currency_and_period() {
+        let tmp = tempdir().expect("tempdir");
+        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("run");
+
+        let mut hourly_usd = mk_job("hourly_usd", Utc::now().to_rfc3339());
+        hourly_usd.title = "Hourly USD".to_string();
+        hourly_usd.pay = "$10/hr".to_string(); // ~1600 USD/mo
+        db.insert_job(&hourly_usd, run).expect("insert hourly");
+
+        let mut monthly_usd = mk_job("monthly_usd", Utc::now().to_rfc3339());
+        monthly_usd.title = "Monthly USD".to_string();
+        monthly_usd.pay = "$1500/mo".to_string(); // 1500 USD/mo
+        db.insert_job(&monthly_usd, run).expect("insert monthly usd");
+
+        let mut monthly_php = mk_job("monthly_php", Utc::now().to_rfc3339());
+        monthly_php.title = "Monthly PHP".to_string();
+        monthly_php.pay = "₱55,000/mo".to_string(); // ~1000 USD/mo at /55
+        db.insert_job(&monthly_php, run).expect("insert monthly php");
+
+        let ranked = db
+            .get_top_paying_jobs(None, &[], 3)
+            .expect("ranked jobs");
+        let titles: Vec<String> = ranked.iter().map(|j| j.title.clone()).collect();
+        assert_eq!(titles, vec!["Hourly USD", "Monthly USD", "Monthly PHP"]);
     }
 }

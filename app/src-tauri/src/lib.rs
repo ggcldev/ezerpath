@@ -12,7 +12,8 @@ use ai::{
 };
 use ai::sentence_service::SentenceServiceClient;
 use crawler::{Crawler, CrawlStats, JobDetailsPayload};
-use db::{Database, Job, ScanRun};
+use db::{parse_pay, Database, Job, ScanRun};
+use std::cmp::Ordering;
 use std::sync::Arc;
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
@@ -292,7 +293,7 @@ fn response_violates_app_scope(reply: &str) -> bool {
 
 #[derive(Debug, Clone)]
 enum ChatIntent {
-    /// "top 3 paying SEO jobs" → SQL ORDER BY salary_min DESC
+    /// "top 3 paying SEO jobs" → SQL ORDER BY normalized salary score
     Ranking { n: usize, title_terms: Vec<String> },
     /// Follow-up on previous results: "describe them", "which one pays more"
     FollowUp,
@@ -304,6 +305,13 @@ enum ChatIntent {
 
 fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
     let lower = message.to_lowercase();
+
+    // Ranking should win over follow-up cues when explicitly requested.
+    if is_explicit_top_jobs_request(message) {
+        let n = extract_top_n(message, 3);
+        let terms = extract_query_terms(&lower);
+        return ChatIntent::Ranking { n, title_terms: terms };
+    }
 
     // Follow-up detection: short message referencing prior results
     let followup_cues = [
@@ -340,13 +348,6 @@ fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
     if wants_descriptions(&lower) && !is_followup {
         let n = extract_top_n(message, 3);
         return ChatIntent::Describe { n };
-    }
-
-    // Ranking: "top N", "best", "highest paying"
-    if is_explicit_top_jobs_request(message) {
-        let n = extract_top_n(message, 3);
-        let terms = extract_query_terms(&lower);
-        return ChatIntent::Ranking { n, title_terms: terms };
     }
 
     ChatIntent::General
@@ -392,11 +393,66 @@ fn jobs_to_cards(jobs: &[Job]) -> Vec<AiJobCard> {
         .collect()
 }
 
-fn format_ranking_reply(jobs: &[Job], include_descriptions: bool) -> String {
+fn job_pay_score_usd_monthly(job: &Job) -> Option<f64> {
+    let needs_fallback_parse = job.salary_min.is_none()
+        || job.salary_currency.trim().is_empty()
+        || job.salary_period.trim().is_empty();
+    let parsed = if needs_fallback_parse {
+        Some(parse_pay(&job.pay))
+    } else {
+        None
+    };
+
+    let min = job.salary_min.or_else(|| parsed.as_ref().and_then(|p| p.min))?;
+    if min <= 0.0 {
+        return None;
+    }
+
+    let currency = if job.salary_currency.trim().is_empty() {
+        parsed.as_ref().map(|p| p.currency.to_uppercase()).unwrap_or_default()
+    } else {
+        job.salary_currency.to_uppercase()
+    };
+    let period = if job.salary_period.trim().is_empty() {
+        parsed.as_ref().map(|p| p.period.to_lowercase()).unwrap_or_default()
+    } else {
+        job.salary_period.to_lowercase()
+    };
+
+    let monthly_amount = match period.as_str() {
+        "hourly" => min * 160.0,
+        "monthly" => min,
+        _ => min,
+    };
+
+    let usd_monthly = match currency.as_str() {
+        "PHP" => monthly_amount / 55.0,
+        _ => monthly_amount,
+    };
+    Some(usd_monthly)
+}
+
+fn compare_jobs_for_ranking(a: &Job, b: &Job) -> Ordering {
+    match (job_pay_score_usd_monthly(a), job_pay_score_usd_monthly(b)) {
+        (Some(va), Some(vb)) => vb
+            .partial_cmp(&va)
+            .unwrap_or_else(|| b.scraped_at.cmp(&a.scraped_at)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => b.scraped_at.cmp(&a.scraped_at),
+    }
+}
+
+fn format_ranking_reply(jobs: &[Job], include_descriptions: bool, by_pay: bool) -> String {
     if jobs.is_empty() {
         return "No jobs matched your criteria. Try running a scan or adjusting your keywords.".to_string();
     }
-    let mut lines = vec![format!("Top {} jobs by pay:", jobs.len())];
+    let header = if by_pay {
+        format!("Top {} jobs by normalized pay:", jobs.len())
+    } else {
+        format!("Top {} recent jobs (pay data unavailable):", jobs.len())
+    };
+    let mut lines = vec![header];
     for (i, job) in jobs.iter().enumerate() {
         let pay_display = if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() };
         lines.push(format!("{}. {} — {} ({})", i + 1, job.title, job.company, pay_display));
@@ -901,7 +957,7 @@ async fn ai_chat(
 
     match intent {
         ChatIntent::Ranking { n, ref title_terms } => {
-            // SQL-first: query DB sorted by salary_min DESC
+            // SQL-first: query DB sorted by normalized pay score
             let sql_jobs = state.db
                 .get_top_paying_jobs(keyword.as_deref(), title_terms, n)
                 .map_err(|e| e.to_string())?;
@@ -909,7 +965,7 @@ async fn ai_chat(
             // If SQL returned results with salary data, use them directly
             if !sql_jobs.is_empty() {
                 let include_desc = wants_descriptions(&message);
-                let reply = format_ranking_reply(&sql_jobs, include_desc);
+                let reply = format_ranking_reply(&sql_jobs, include_desc, true);
                 let cards = jobs_to_cards(&sql_jobs);
                 let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
                 let latency = started.elapsed().as_millis() as i64;
@@ -922,12 +978,14 @@ async fn ai_chat(
                 return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
             }
 
-            // Fallback: sort in-memory by scraped_at (recency) with title filtering
-            let scoped = scoped_jobs_for_message(&message, &jobs, &state.db.get_runs().map_err(|e| e.to_string())?);
+            // Fallback: rank in-memory using normalized pay score, then recency.
+            let mut scoped = scoped_jobs_for_message(&message, &jobs, &state.db.get_runs().map_err(|e| e.to_string())?);
+            scoped.sort_by(compare_jobs_for_ranking);
             let top: Vec<Job> = scoped.into_iter().take(n).collect();
             if !top.is_empty() {
                 let include_desc = wants_descriptions(&message);
-                let reply = format_ranking_reply(&top, include_desc);
+                let has_pay_scores = top.iter().any(|j| job_pay_score_usd_monthly(j).is_some());
+                let reply = format_ranking_reply(&top, include_desc, has_pay_scores);
                 let cards = jobs_to_cards(&top);
                 let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
                 let latency = started.elapsed().as_millis() as i64;
