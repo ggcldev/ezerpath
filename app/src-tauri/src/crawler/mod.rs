@@ -147,13 +147,48 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default();
 
+        // Try CSS selector first; fall back to parsing the card's inner HTML
+        // when the scraper crate's tree construction skips the .desc element.
         let summary = card.select(&desc_sel)
             .next()
-            .map(|e| {
-                let text: String = e.text().collect::<String>().trim().to_string();
-                if text.len() > 500 { text[..500].to_string() } else { text }
-            })
-            .unwrap_or_default();
+            .map(|e| e.text().collect::<String>().trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| {
+                let inner = card.inner_html();
+                if let Some(start) = inner.find("class=\"desc") {
+                    if let Some(gt) = inner[start..].find('>') {
+                        let after = start + gt + 1;
+                        if let Some(end) = inner[after..].find("</div>") {
+                            let raw = &inner[after..after + end];
+                            let stripped = raw
+                                .replace("<br>", " ")
+                                .replace("<br/>", " ")
+                                .replace("<br />", " ");
+                            // Strip remaining HTML tags
+                            let mut out = String::new();
+                            let mut in_tag = false;
+                            for ch in stripped.chars() {
+                                match ch {
+                                    '<' => in_tag = true,
+                                    '>' => in_tag = false,
+                                    _ if !in_tag => out.push(ch),
+                                    _ => {}
+                                }
+                            }
+                            return out.split_whitespace().collect::<Vec<_>>().join(" ");
+                        }
+                    }
+                }
+                String::new()
+            });
+        let summary = if summary.chars().count() > 500 {
+            let mut s = String::new();
+            for ch in summary.chars().take(497) { s.push(ch); }
+            s.push_str("...");
+            s
+        } else {
+            summary
+        };
 
         // Find job link
         let mut url = String::new();
@@ -201,6 +236,10 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             is_new: true,
             watchlisted: false,
             run_id: None,
+            salary_min: None,
+            salary_max: None,
+            salary_currency: String::new(),
+            salary_period: String::new(),
         });
     }
 

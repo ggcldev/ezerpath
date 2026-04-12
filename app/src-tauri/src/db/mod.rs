@@ -22,6 +22,10 @@ pub struct Job {
     pub is_new: bool,
     pub watchlisted: bool,
     pub run_id: Option<i64>,
+    pub salary_min: Option<f64>,
+    pub salary_max: Option<f64>,
+    pub salary_currency: String,
+    pub salary_period: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +59,116 @@ pub struct JobEmbeddingRow {
     pub watchlisted: bool,
     pub scraped_at: String,
     pub vector_json: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParsedPay {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub currency: String,
+    pub period: String,
+}
+
+pub fn parse_pay(raw: &str) -> ParsedPay {
+    let lower = raw.to_lowercase();
+    let trimmed = lower.trim();
+
+    if trimmed.is_empty()
+        || trimmed == "negotiable"
+        || trimmed.starts_with("depend")
+        || trimmed.starts_with("to be")
+    {
+        return ParsedPay::default();
+    }
+
+    // Detect currency
+    let currency = if trimmed.contains('$') || trimmed.contains("usd") {
+        "USD"
+    } else if trimmed.contains("php") || trimmed.contains("pesos") || trimmed.contains('₱') {
+        "PHP"
+    } else {
+        ""
+    };
+
+    // Detect period
+    let period = if trimmed.contains("/hr")
+        || trimmed.contains("/hour")
+        || trimmed.contains("per hour")
+        || trimmed.contains("an hour")
+        || trimmed.contains("p/h")
+        || trimmed.contains("hourly")
+    {
+        "hourly"
+    } else if trimmed.contains("/mo")
+        || trimmed.contains("/month")
+        || trimmed.contains("a month")
+        || trimmed.contains("monthly")
+        || trimmed.contains("/m ")
+        || trimmed.ends_with("/m")
+    {
+        "monthly"
+    } else {
+        ""
+    };
+
+    let cleaned = trimmed.replace(',', "");
+    let nums = extract_numbers_from_pay(&cleaned);
+
+    if nums.is_empty() {
+        return ParsedPay::default();
+    }
+
+    let (min, max) = if nums.len() >= 2 {
+        let (a, b) = (nums[0], nums[1]);
+        if a <= b { (Some(a), Some(b)) } else { (Some(b), Some(a)) }
+    } else {
+        (Some(nums[0]), Some(nums[0]))
+    };
+
+    // Infer currency from magnitude when not explicitly stated
+    let currency = if currency.is_empty() {
+        if max.unwrap_or(0.0) > 500.0 { "PHP" } else { "USD" }
+    } else {
+        currency
+    };
+
+    // Infer period from magnitude when not explicitly stated
+    let period = if period.is_empty() {
+        if max.unwrap_or(0.0) <= 50.0 { "hourly" } else { "monthly" }
+    } else {
+        period
+    };
+
+    ParsedPay {
+        min,
+        max,
+        currency: currency.to_string(),
+        period: period.to_string(),
+    }
+}
+
+fn extract_numbers_from_pay(s: &str) -> Vec<f64> {
+    let mut nums = Vec::new();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        if chars[i].is_ascii_digit() || (chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit()) {
+            let start = i;
+            while i < len && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            if let Ok(n) = token.parse::<f64>() {
+                if n > 0.0 {
+                    nums.push(n);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    nums
 }
 
 pub struct Database {
@@ -182,6 +296,31 @@ impl Database {
         conn.execute_batch("ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';").ok();
         conn.execute_batch("ALTER TABLE runs ADD COLUMN error_message TEXT;").ok();
         conn.execute_batch("ALTER TABLE runs ADD COLUMN finished_at TEXT;").ok();
+        // Migration: add normalized salary fields.
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_min REAL;").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_max REAL;").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_currency TEXT DEFAULT '';").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_period TEXT DEFAULT '';").ok();
+        // Migration: add linked job IDs for chat follow-up context.
+        conn.execute_batch("ALTER TABLE ai_messages ADD COLUMN linked_job_ids_json TEXT DEFAULT '[]';").ok();
+
+        // Backfill salary fields for existing rows that have a pay string but no parsed salary.
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, pay FROM jobs WHERE pay != '' AND salary_max IS NULL",
+            )?;
+            let rows: Vec<(i64, String)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            for (id, pay_str) in rows {
+                let parsed = parse_pay(&pay_str);
+                conn.execute(
+                    "UPDATE jobs SET salary_min = ?1, salary_max = ?2, salary_currency = ?3, salary_period = ?4 WHERE id = ?5",
+                    params![parsed.min, parsed.max, parsed.currency, parsed.period, id],
+                )?;
+            }
+        }
 
         let defaults = AiRuntimeConfig::default();
         conn.execute(
@@ -281,13 +420,15 @@ impl Database {
 
     pub fn insert_job(&self, job: &Job, run_id: i64) -> Result<bool, rusqlite::Error> {
         let conn = self.conn()?;
+        let parsed = parse_pay(&job.pay);
         let inserted = conn.execute(
-            "INSERT OR IGNORE INTO jobs (source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT OR IGNORE INTO jobs (source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id, salary_min, salary_max, salary_currency, salary_period)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 job.source, job.source_id, job.title, job.company, job.company_logo_url, job.pay,
                 job.posted_at, job.url, job.summary, job.keyword, job.scraped_at,
                 job.is_new as i32, run_id,
+                parsed.min, parsed.max, parsed.currency, parsed.period,
             ],
         )?;
 
@@ -308,7 +449,11 @@ impl Database {
                  keyword = ?8,
                  scraped_at = ?9,
                  is_new = 0,
-                 run_id = ?10
+                 run_id = ?10,
+                 salary_min = ?13,
+                 salary_max = ?14,
+                 salary_currency = ?15,
+                 salary_period = ?16
              WHERE source = ?11 AND source_id = ?12",
             params![
                 job.title,
@@ -323,6 +468,10 @@ impl Database {
                 run_id,
                 job.source,
                 job.source_id,
+                parsed.min,
+                parsed.max,
+                parsed.currency,
+                parsed.period,
             ],
         )?;
 
@@ -332,7 +481,7 @@ impl Database {
     pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut query = String::from(
-            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
              FROM jobs WHERE 1=1"
         );
         let mut bind_values: Vec<Value> = Vec::new();
@@ -354,6 +503,53 @@ impl Database {
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
 
+        let mut jobs = Vec::new();
+        for row in rows { jobs.push(row?); }
+        Ok(jobs)
+    }
+
+    pub fn get_jobs_by_ids(&self, ids: &[i64]) -> Result<Vec<Job>, rusqlite::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let query = format!(
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
+             FROM jobs WHERE id IN ({})
+             ORDER BY scraped_at DESC",
+            placeholders.join(",")
+        );
+        let bind_values: Vec<Value> = ids.iter().map(|id| Value::Integer(*id)).collect();
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
+        let mut jobs = Vec::new();
+        for row in rows { jobs.push(row?); }
+        Ok(jobs)
+    }
+
+    pub fn get_top_paying_jobs(&self, keyword_filter: Option<&str>, title_terms: &[String], limit: usize) -> Result<Vec<Job>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut query = String::from(
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
+             FROM jobs WHERE salary_min IS NOT NULL"
+        );
+        let mut bind_values: Vec<Value> = Vec::new();
+        if let Some(kw) = keyword_filter {
+            query.push_str(" AND keyword = ?");
+            bind_values.push(Value::Text(kw.to_string()));
+        }
+        if !title_terms.is_empty() {
+            let clauses: Vec<String> = title_terms.iter().map(|_| "LOWER(title) LIKE ?".to_string()).collect();
+            query.push_str(&format!(" AND ({})", clauses.join(" OR ")));
+            for t in title_terms {
+                bind_values.push(Value::Text(format!("%{}%", t.to_lowercase())));
+            }
+        }
+        query.push_str(" ORDER BY salary_min DESC LIMIT ?");
+        bind_values.push(Value::Integer(limit as i64));
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
         let mut jobs = Vec::new();
         for row in rows { jobs.push(row?); }
         Ok(jobs)
@@ -603,12 +799,13 @@ impl Database {
         Ok(out)
     }
 
-    pub fn append_ai_message(&self, conversation_id: i64, role: &str, content: &str, meta_json: &str, now: &str) -> Result<AiMessage, rusqlite::Error> {
+    pub fn append_ai_message(&self, conversation_id: i64, role: &str, content: &str, meta_json: &str, linked_job_ids: &[i64], now: &str) -> Result<AiMessage, rusqlite::Error> {
         let conn = self.conn()?;
+        let linked_json = serde_json::to_string(linked_job_ids).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
-            "INSERT INTO ai_messages (conversation_id, role, content, created_at, meta_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![conversation_id, role, content, now, meta_json],
+            "INSERT INTO ai_messages (conversation_id, role, content, created_at, meta_json, linked_job_ids_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![conversation_id, role, content, now, meta_json, linked_json],
         )?;
         conn.execute(
             "UPDATE ai_conversations SET updated_at = ?1 WHERE id = ?2",
@@ -622,13 +819,14 @@ impl Database {
             content: content.to_string(),
             created_at: now.to_string(),
             meta_json: meta_json.to_string(),
+            linked_job_ids_json: linked_json,
         })
     }
 
     pub fn get_ai_messages(&self, conversation_id: i64) -> Result<Vec<AiMessage>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, role, content, created_at, meta_json
+            "SELECT id, conversation_id, role, content, created_at, meta_json, linked_job_ids_json
              FROM ai_messages
              WHERE conversation_id = ?1
              ORDER BY id ASC",
@@ -641,6 +839,7 @@ impl Database {
                 content: row.get(3)?,
                 created_at: row.get(4)?,
                 meta_json: row.get(5)?,
+                linked_job_ids_json: row.get::<_, String>(6).unwrap_or_else(|_| "[]".to_string()),
             })
         })?;
         let mut out = Vec::new();
@@ -753,6 +952,10 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         is_new: row.get::<_, i32>(12)? != 0,
         watchlisted: row.get::<_, i32>(13)? != 0,
         run_id: row.get(14)?,
+        salary_min: row.get(15)?,
+        salary_max: row.get(16)?,
+        salary_currency: row.get::<_, String>(17).unwrap_or_default(),
+        salary_period: row.get::<_, String>(18).unwrap_or_default(),
     })
 }
 
@@ -779,6 +982,10 @@ mod tests {
             is_new: true,
             watchlisted: false,
             run_id: None,
+            salary_min: None,
+            salary_max: None,
+            salary_currency: String::new(),
+            salary_period: String::new(),
         }
     }
 
