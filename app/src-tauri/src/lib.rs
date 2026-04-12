@@ -300,6 +300,8 @@ enum ChatIntent {
     FollowUp,
     /// "describe the SEO jobs", "summarize the first 3"
     Describe { n: usize },
+    /// "find jobs about link building", "show me jobs with seo" → FTS5 search
+    SearchKeyword { query: String },
     /// Everything else → Ollama with full job context
     General,
 }
@@ -312,6 +314,13 @@ fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
         let n = extract_top_n(message, 3);
         let terms = extract_query_terms(&lower);
         return ChatIntent::Ranking { n, title_terms: terms };
+    }
+
+    // Keyword search: "find jobs about X", "show me jobs with X", etc.
+    // Sits between Ranking and FollowUp so explicit search phrasing wins,
+    // but a short reference like "describe them" still routes to follow-up.
+    if let Some(query) = try_search_keyword(&lower) {
+        return ChatIntent::SearchKeyword { query };
     }
 
     // Follow-up detection: short message referencing prior results
@@ -352,6 +361,61 @@ fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
     }
 
     ChatIntent::General
+}
+
+/// Detect explicit "find/search/show me jobs (about|for|with|...) X" phrasing
+/// and return the cleaned search payload. Returns None when no recognizable
+/// lead is present or the tail collapses to filler words.
+fn try_search_keyword(lower: &str) -> Option<String> {
+    // Order matters: longer leads first so "search for jobs" beats "search jobs".
+    let leads = [
+        "search for jobs", "look for jobs", "find me jobs", "show me jobs",
+        "are there jobs", "is there a job", "find jobs", "search jobs", "show jobs",
+        "any jobs",
+    ];
+    let lead_end = leads
+        .iter()
+        .find_map(|l| lower.find(l).map(|i| i + l.len()))?;
+    let tail = lower[lead_end..].trim();
+    if tail.is_empty() {
+        return None;
+    }
+    let connectors = [
+        "that mention ", "that include ", "related to ", "matching ",
+        "involving ", "about ", "with ", "for ", "that ",
+    ];
+    let after = connectors
+        .iter()
+        .find_map(|c| tail.strip_prefix(c))
+        .unwrap_or(tail);
+    let cleaned = after.trim_end_matches(|c: char| !c.is_alphanumeric());
+    let filler = ["me", "us", "you", "please", "now", "today", "anyone", "available"];
+    let useful: Vec<&str> = cleaned
+        .split_whitespace()
+        .filter(|w| !filler.contains(w))
+        .collect();
+    if useful.is_empty() {
+        return None;
+    }
+    Some(useful.join(" "))
+}
+
+fn format_search_keyword_reply(query: &str, jobs: &[Job]) -> String {
+    if jobs.is_empty() {
+        return format!("No jobs found matching \"{query}\".");
+    }
+    let mut lines = vec![format!(
+        "Found {} job{} matching \"{}\":",
+        jobs.len(),
+        if jobs.len() == 1 { "" } else { "s" },
+        query
+    )];
+    for (i, j) in jobs.iter().enumerate() {
+        let company = if j.company.is_empty() { "Unknown company" } else { j.company.as_str() };
+        lines.push(format!("{}. {} — {}", i + 1, j.title, company));
+    }
+    lines.push("Open any card below for full details.".to_string());
+    lines.join("\n")
 }
 
 fn extract_query_terms(lower: &str) -> Vec<String> {
@@ -1048,6 +1112,7 @@ async fn ai_chat(
         ChatIntent::Ranking { .. } => "ranking",
         ChatIntent::FollowUp => "followup",
         ChatIntent::Describe { .. } => "describe",
+        ChatIntent::SearchKeyword { .. } => "search_keyword",
         ChatIntent::General => "general",
     };
 
@@ -1224,6 +1289,37 @@ async fn ai_chat(
                 }
                 // No summaries — fall through to Ollama with targeted context
             }
+        }
+
+        ChatIntent::SearchKeyword { ref query } => {
+            let results = state.db.search_jobs_fts(query, 10).map_err(|e| e.to_string())?;
+            if !results.is_empty() {
+                let reply = format_search_keyword_reply(query, &results);
+                let cards = jobs_to_cards(&results);
+                let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                let candidate_ids: Vec<i64> = results.iter().filter_map(|j| j.id).collect();
+                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+                let latency = started.elapsed().as_millis() as i64;
+                let _ = state.db.log_ai_run(&AiRunLog {
+                    task_type: "chat",
+                    latency_ms: latency,
+                    status: "success_search",
+                    created_at: &now,
+                    intent: Some(intent_str),
+                    route: Some("search_keyword_fts"),
+                    candidate_job_ids: Some(&candidate_ids),
+                    final_job_ids: Some(&linked_ids),
+                    retrieval_ms: Some(retrieval_ms),
+                    ..Default::default()
+                });
+                state.db.append_ai_message(
+                    convo_id, "assistant", &reply,
+                    &assistant_meta("sql", None, Some(&cards)),
+                    &linked_ids, &now,
+                ).map_err(|e| e.to_string())?;
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+            }
+            // No FTS hits — fall through to general Ollama path.
         }
 
         ChatIntent::General => {}

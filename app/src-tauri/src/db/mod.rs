@@ -171,6 +171,20 @@ fn extract_numbers_from_pay(s: &str) -> Vec<f64> {
     nums
 }
 
+/// Build a safe FTS5 MATCH expression from arbitrary user text. Strips
+/// non-alphanumeric characters from each whitespace-split token, drops empties,
+/// then joins with spaces (implicit AND) and appends `*` for prefix matching.
+/// Returns an empty string when no usable tokens remain.
+pub fn build_fts5_query(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|tok| tok.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .filter(|tok| !tok.is_empty())
+        .map(|tok| format!("{tok}*"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub struct Database {
     pub conn: Mutex<Connection>,
 }
@@ -310,6 +324,42 @@ impl Database {
         conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN final_job_ids TEXT;").ok();
         conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN retrieval_ms INTEGER;").ok();
         conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN llm_ms INTEGER;").ok();
+
+        // Migration: FTS5 index over jobs.title/company/summary (phase #3).
+        // Uses contentless-mirror pattern: jobs_fts is a shadow table kept in
+        // sync via triggers, queryable with bm25() ranking.
+        let fts_create = conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
+                title, company, summary,
+                content='jobs', content_rowid='id'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS jobs_ai AFTER INSERT ON jobs BEGIN
+                INSERT INTO jobs_fts(rowid, title, company, summary)
+                VALUES (new.id, new.title, new.company, new.summary);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS jobs_ad AFTER DELETE ON jobs BEGIN
+                INSERT INTO jobs_fts(jobs_fts, rowid, title, company, summary)
+                VALUES('delete', old.id, old.title, old.company, old.summary);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS jobs_au AFTER UPDATE ON jobs BEGIN
+                INSERT INTO jobs_fts(jobs_fts, rowid, title, company, summary)
+                VALUES('delete', old.id, old.title, old.company, old.summary);
+                INSERT INTO jobs_fts(rowid, title, company, summary)
+                VALUES (new.id, new.title, new.company, new.summary);
+            END;",
+        );
+        // If the table was just created (or is empty), backfill from jobs.
+        if fts_create.is_ok() {
+            let count: i64 = conn
+                .query_row("SELECT count(*) FROM jobs_fts", [], |r| r.get(0))
+                .unwrap_or(0);
+            if count == 0 {
+                conn.execute_batch("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild');").ok();
+            }
+        }
 
         // Backfill salary fields for existing rows that have a pay string but no parsed salary.
         {
@@ -510,6 +560,31 @@ impl Database {
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
 
+        let mut jobs = Vec::new();
+        for row in rows { jobs.push(row?); }
+        Ok(jobs)
+    }
+
+    /// Full-text search over jobs (title, company, summary) ranked by bm25.
+    /// Tokens are extracted from the user query, sanitized, and joined with
+    /// implicit AND. Each token gets a `*` prefix so partial matches work.
+    pub fn search_jobs_fts(&self, query: &str, limit: usize) -> Result<Vec<Job>, rusqlite::Error> {
+        let fts_query = build_fts5_query(query);
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let sql = "SELECT j.id, j.source, j.source_id, j.title, j.company, j.company_logo_url,
+                          j.pay, j.posted_at, j.url, j.summary, j.keyword, j.scraped_at,
+                          j.is_new, j.watchlisted, j.run_id, j.salary_min, j.salary_max,
+                          j.salary_currency, j.salary_period
+                   FROM jobs_fts
+                   JOIN jobs j ON j.id = jobs_fts.rowid
+                   WHERE jobs_fts MATCH ?1
+                   ORDER BY bm25(jobs_fts)
+                   LIMIT ?2";
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], row_to_job)?;
         let mut jobs = Vec::new();
         for row in rows { jobs.push(row?); }
         Ok(jobs)
@@ -1038,7 +1113,7 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, Job};
+    use super::{build_fts5_query, Database, Job};
     use chrono::{Duration, Utc};
     use tempfile::tempdir;
 
@@ -1153,6 +1228,43 @@ mod tests {
             .expect("ordered jobs");
         let ordered_ids: Vec<i64> = ordered.into_iter().filter_map(|j| j.id).collect();
         assert_eq!(ordered_ids, vec![id_two, id_one, id_three]);
+    }
+
+    #[test]
+    fn fts5_query_strips_punctuation_and_adds_prefix() {
+        assert_eq!(build_fts5_query("seo outreach"), "seo* outreach*");
+        assert_eq!(build_fts5_query("link-building!"), "linkbuilding*");
+        assert_eq!(build_fts5_query("  "), "");
+        assert_eq!(build_fts5_query("c++ dev"), "c* dev*");
+    }
+
+    #[test]
+    fn search_jobs_fts_ranks_title_matches_above_summary_only() {
+        let tmp = tempdir().expect("tempdir");
+        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("run");
+
+        let mut title_hit = mk_job("title_hit", Utc::now().to_rfc3339());
+        title_hit.title = "Link Building Outreach Specialist".to_string();
+        title_hit.summary = "Help with content.".to_string();
+        db.insert_job(&title_hit, run).expect("insert title hit");
+
+        let mut summary_only = mk_job("summary_only", Utc::now().to_rfc3339());
+        summary_only.title = "Content Writer".to_string();
+        summary_only.summary = "Some link building knowledge needed.".to_string();
+        db.insert_job(&summary_only, run).expect("insert summary only");
+
+        let mut unrelated = mk_job("unrelated", Utc::now().to_rfc3339());
+        unrelated.title = "Bookkeeper".to_string();
+        unrelated.summary = "Quickbooks experience.".to_string();
+        db.insert_job(&unrelated, run).expect("insert unrelated");
+
+        let results = db.search_jobs_fts("link building", 10).expect("fts");
+        let titles: Vec<&str> = results.iter().map(|j| j.title.as_str()).collect();
+        assert_eq!(titles.len(), 2);
+        assert_eq!(titles[0], "Link Building Outreach Specialist");
     }
 
     #[test]

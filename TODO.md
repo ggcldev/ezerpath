@@ -8,7 +8,7 @@ Living checklist for the upgrades agreed on after the GPT-5 architecture review.
 
 ---
 
-## #1 — Tauri Channel for scan progress ⏳
+## #1 — Tauri Channel for scan progress ✅
 
 **Why first:** worst UX in the app. `crawl_jobs` blocks on one awaited promise for ~30–100s with zero feedback. Fixing it requires no DB changes and no IPC contract churn for any *other* command, so it's the lowest-risk highest-leverage change.
 
@@ -42,7 +42,7 @@ Living checklist for the upgrades agreed on after the GPT-5 architecture review.
 
 ---
 
-## #2 — Telemetry breakdown on `ai_runs` ☐
+## #2 — Telemetry breakdown on `ai_runs` ✅
 
 **Why second:** every later step is debugged or measured against this table. Building #3, #4, #5 without these columns means flying blind.
 
@@ -75,7 +75,7 @@ Living checklist for the upgrades agreed on after the GPT-5 architecture review.
 
 ---
 
-## #3 — FTS5 + `search_keyword` intent route ☐
+## #3 — FTS5 + `search_keyword` intent route ✅
 
 **Why third:** real keyword recall. Current `db::get_jobs` uses `LIKE %kw%` which misses morphology, ordering, and ranking. SQLite ships FTS5; the cost is one virtual table and a trigger, and it gives BM25 ranking for free.
 
