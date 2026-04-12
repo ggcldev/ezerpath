@@ -1,6 +1,7 @@
 use crate::db::{Database, Job};
 use chrono::Utc;
 use reqwest::Client;
+use reqwest::StatusCode;
 use reqwest::Url;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,10 @@ const BASE_URL: &str = "https://www.onlinejobs.ph/jobseekers/jobsearch";
 const SITE_BASE: &str = "https://www.onlinejobs.ph";
 const CRAWL_DELAY: Duration = Duration::from_secs(5);
 const MAX_PAGES: usize = 5;
+const FETCH_MAX_ATTEMPTS: usize = 3;
+const FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(700);
+const SCRAPLING_ENABLE_ENV: &str = "EZER_ENABLE_SCRAPLING_FALLBACK";
+const SCRAPLING_BASE_URL_ENV: &str = "EZER_SCRAPLING_BASE_URL";
 
 pub struct Crawler {
     client: Client,
@@ -24,6 +29,51 @@ pub struct JobDetailsPayload {
     pub company_logo_url: String,
     pub description: String,
     pub description_html: String,
+}
+
+#[derive(Debug)]
+struct FetchAttemptError {
+    message: String,
+    retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ScraplingSearchRequest {
+    url: String,
+    keyword: String,
+    html: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ScraplingSearchResponse {
+    jobs: Vec<ScraplingJob>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ScraplingJob {
+    source_id: Option<String>,
+    title: Option<String>,
+    company: Option<String>,
+    company_logo_url: Option<String>,
+    pay: Option<String>,
+    posted_at: Option<String>,
+    url: Option<String>,
+    summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ScraplingDetailsRequest {
+    url: String,
+    html: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ScraplingDetailsResponse {
+    company: Option<String>,
+    poster_name: Option<String>,
+    company_logo_url: Option<String>,
+    description: Option<String>,
+    description_html: Option<String>,
 }
 
 impl Crawler {
@@ -47,10 +97,29 @@ impl Crawler {
                 format!("{}/{}?jobkeyword={}&dateposted={}", BASE_URL, offset, encoded, days)
             };
 
-            let html = self.fetch(&url).await?;
-            let jobs = parse_search_page(&html, keyword)?;
+            let html = self.fetch_with_retry(&url).await?;
+            let mut parse_error: Option<String> = None;
+            let mut jobs = match parse_search_page(&html, keyword) {
+                Ok(rows) => rows,
+                Err(err) => {
+                    parse_error = Some(err);
+                    Vec::new()
+                }
+            };
 
             if jobs.is_empty() {
+                if let Some(fallback_jobs) = self
+                    .try_scrapling_search_fallback(&url, keyword, Some(&html))
+                    .await
+                {
+                    jobs = fallback_jobs;
+                }
+            }
+
+            if jobs.is_empty() {
+                if let Some(err) = parse_error {
+                    return Err(format!("Failed to parse search page: {err}"));
+                }
                 break;
             }
 
@@ -68,20 +137,158 @@ impl Crawler {
         Ok(stats)
     }
 
-    async fn fetch(&self, url: &str) -> Result<String, String> {
-        let resp = self.client.get(url).send().await.map_err(|e| e.to_string())?;
+    async fn fetch_once(&self, url: &str) -> Result<String, FetchAttemptError> {
+        let resp = self.client.get(url).send().await.map_err(|e| FetchAttemptError {
+            message: e.to_string(),
+            retryable: e.is_timeout() || e.is_connect() || e.is_request(),
+        })?;
         if !resp.status().is_success() {
-            return Err(format!("HTTP {}", resp.status()));
+            return Err(FetchAttemptError {
+                message: format!("HTTP {}", resp.status()),
+                retryable: is_retryable_status(resp.status()),
+            });
         }
-        resp.text().await.map_err(|e| e.to_string())
+        resp.text().await.map_err(|e| FetchAttemptError {
+            message: e.to_string(),
+            retryable: true,
+        })
+    }
+
+    async fn fetch_with_retry(&self, url: &str) -> Result<String, String> {
+        let mut last_err = String::from("unknown fetch error");
+        for attempt in 1..=FETCH_MAX_ATTEMPTS {
+            match self.fetch_once(url).await {
+                Ok(text) => return Ok(text),
+                Err(err) => {
+                    last_err = err.message;
+                    if !err.retryable || attempt == FETCH_MAX_ATTEMPTS {
+                        break;
+                    }
+                    let factor = 1_u32 << ((attempt - 1) as u32);
+                    tokio::time::sleep(FETCH_RETRY_BASE_DELAY * factor).await;
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    fn scrapling_base_url() -> Option<String> {
+        let enabled = std::env::var(SCRAPLING_ENABLE_ENV).unwrap_or_default() == "1";
+        if !enabled {
+            return None;
+        }
+        let base = std::env::var(SCRAPLING_BASE_URL_ENV).ok()?;
+        let trimmed = base.trim().trim_end_matches('/').to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }
+
+    async fn try_scrapling_search_fallback(
+        &self,
+        url: &str,
+        keyword: &str,
+        html: Option<&str>,
+    ) -> Option<Vec<Job>> {
+        let base = Self::scrapling_base_url()?;
+        let endpoint = format!("{base}/extract-search");
+        let payload = ScraplingSearchRequest {
+            url: url.to_string(),
+            keyword: keyword.to_string(),
+            html: html.map(|s| s.to_string()),
+        };
+        let resp = self.client.post(endpoint).json(&payload).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let data = resp.json::<ScraplingSearchResponse>().await.ok()?;
+        let now = Utc::now().to_rfc3339();
+        let mut jobs = Vec::new();
+        for row in data.jobs {
+            let title = row.title.unwrap_or_default();
+            let url = row.url.unwrap_or_default();
+            if title.trim().is_empty() || url.trim().is_empty() || !is_allowed_job_url(&url) {
+                continue;
+            }
+            let source_id = row.source_id.unwrap_or_else(|| {
+                url.rsplit('/').next().unwrap_or_default().to_string()
+            });
+            jobs.push(Job {
+                id: None,
+                source: "onlinejobs".to_string(),
+                source_id,
+                title: normalize_text(&title),
+                company: row.company.map(|s| normalize_text(&s)).unwrap_or_default(),
+                company_logo_url: row
+                    .company_logo_url
+                    .map(|s| normalize_asset_url(&s))
+                    .unwrap_or_default(),
+                pay: row.pay.map(|s| normalize_text(&s)).unwrap_or_default(),
+                posted_at: row.posted_at.map(|s| normalize_text(&s)).unwrap_or_default(),
+                url,
+                summary: row
+                    .summary
+                    .map(|s| normalize_text(&s))
+                    .unwrap_or_default(),
+                keyword: keyword.to_string(),
+                scraped_at: now.clone(),
+                is_new: true,
+                watchlisted: false,
+                run_id: None,
+                salary_min: None,
+                salary_max: None,
+                salary_currency: String::new(),
+                salary_period: String::new(),
+            });
+        }
+        if jobs.is_empty() {
+            None
+        } else {
+            Some(jobs)
+        }
+    }
+
+    async fn try_scrapling_details_fallback(&self, url: &str, html: Option<&str>) -> Option<JobDetailsPayload> {
+        let base = Self::scrapling_base_url()?;
+        let endpoint = format!("{base}/extract-details");
+        let payload = ScraplingDetailsRequest {
+            url: url.to_string(),
+            html: html.map(|s| s.to_string()),
+        };
+        let resp = self.client.post(endpoint).json(&payload).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let data = resp.json::<ScraplingDetailsResponse>().await.ok()?;
+        Some(JobDetailsPayload {
+            company: data.company.map(|s| normalize_text(&s)).unwrap_or_default(),
+            poster_name: data.poster_name.map(|s| normalize_text(&s)).unwrap_or_default(),
+            company_logo_url: data
+                .company_logo_url
+                .map(|s| normalize_asset_url(&s))
+                .unwrap_or_default(),
+            description: data.description.map(|s| normalize_text(&s)).unwrap_or_default(),
+            description_html: data.description_html.unwrap_or_default(),
+        })
     }
 
     pub async fn fetch_job_details(&self, url: &str) -> Result<JobDetailsPayload, String> {
         if !is_allowed_job_url(url) {
             return Err("Unsupported job URL".to_string());
         }
-        let html = self.fetch(url).await?;
-        parse_job_details(&html)
+        let html = self.fetch_with_retry(url).await?;
+        let parsed = parse_job_details(&html)?;
+        if is_meaningful_job_details(&parsed) {
+            return Ok(parsed);
+        }
+        if let Some(fallback) = self.try_scrapling_details_fallback(url, Some(&html)).await {
+            if is_meaningful_job_details(&fallback) {
+                return Ok(fallback);
+            }
+        }
+        Ok(parsed)
     }
 }
 
@@ -96,10 +303,10 @@ pub struct CrawlStats {
 fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
     let doc = Html::parse_document(html);
     let card_sel = Selector::parse(".jobpost-cat-box").map_err(|e| e.to_string())?;
-    let title_sel = Selector::parse("h4").map_err(|e| e.to_string())?;
+    let title_sel = Selector::parse("h4, h3, .job-title, [class*='title']").map_err(|e| e.to_string())?;
     let date_sel = Selector::parse("p.fs-13 em").map_err(|e| e.to_string())?;
-    let pay_sel  = Selector::parse("dl.no-gutters dd").map_err(|e| e.to_string())?;
-    let desc_sel = Selector::parse(".desc").map_err(|e| e.to_string())?;
+    let pay_sel  = Selector::parse("dl.no-gutters dd, .rate, [class*='salary'], [class*='pay']").map_err(|e| e.to_string())?;
+    let desc_sel = Selector::parse(".desc, [class*='description'], [class*='summary']").map_err(|e| e.to_string())?;
     let logo_sel = Selector::parse(".jobpost-cat-box-logo").map_err(|e| e.to_string())?;
     let logo_img_sel = Selector::parse(".jobpost-cat-box-logo img").map_err(|e| e.to_string())?;
     let link_sel = Selector::parse("a").map_err(|e| e.to_string())?;
@@ -121,7 +328,8 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             .next()
             .map(|e| e.text().collect::<String>().trim().to_string())
             .unwrap_or_default()
-            .replace("Posted on ", "");
+            .replace("Posted on ", "")
+            .replace("posted on ", "");
 
         let company = card.select(&logo_img_sel)
             .next()
@@ -155,7 +363,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| {
                 let inner = card.inner_html();
-                if let Some(start) = inner.find("class=\"desc") {
+                if let Some(start) = inner.find("class=\"desc").or_else(|| inner.find("class='desc")) {
                     if let Some(gt) = inner[start..].find('>') {
                         let after = start + gt + 1;
                         if let Some(end) = inner[after..].find("</div>") {
@@ -423,6 +631,21 @@ fn extract_longest_text(doc: &Html, selector: &Selector) -> String {
 
 fn normalize_text(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::FORBIDDEN
+        || status == StatusCode::CONFLICT
+        || status == StatusCode::TOO_EARLY
+        || status.is_server_error()
+}
+
+fn is_meaningful_job_details(payload: &JobDetailsPayload) -> bool {
+    !payload.description.trim().is_empty()
+        || !payload.description_html.trim().is_empty()
+        || !payload.company.trim().is_empty()
 }
 
 fn is_allowed_job_url(url: &str) -> bool {

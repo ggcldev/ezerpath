@@ -94,6 +94,16 @@ A lightweight, cross-platform job hunting app that crawls job boards, organizes 
 - [ ] Filter/sort by keyword, date, pay, new/seen
 - [ ] Minimized app notifier — run background scan checks and fire "New job posted" notifications with quick-open action
 
+### Phase 2.2 — Crawler Resilience Fallback
+- [ ] Keep Rust crawler as primary path (`reqwest + scraper`)
+- [ ] Add retry/backoff tuning and selector health metrics per board
+- [ ] Add optional Scrapling sidecar fallback for hard pages only (not full backbone)
+- [ ] Add sidecar health check + fail-fast behavior so failed fallback does not block scans
+- [ ] Add strict output schema validation before writing fallback results to SQLite
+- [ ] Add settings toggle and runtime flags for enabling/disabling fallback safely
+- [ ] Add logs to track fallback usage rate and extraction success/failure
+- [ ] Add acceptance tests for: primary success, primary fail + fallback success, fallback unavailable
+
 ### Phase 2.1 — Background Monitoring & Notifications (Detailed Plan)
 - [ ] Notification permission flow (desktop)
   - [ ] Add first-run permission prompt for notifications
