@@ -25,35 +25,99 @@ A local-first desktop job-hunting copilot. Crawls job boards, stores everything 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Tauri desktop window (1100×700)                           │
-│                                                            │
-│  ┌──────────────────┐    ┌─────────────────────────────┐   │
-│  │ SolidJS frontend │◄──►│ Rust core (lib.rs)          │   │
-│  │  app/src         │IPC │  - 32 #[tauri::command]s    │   │
-│  │   - views/       │    │  - AppState                 │   │
-│  │   - components/  │    │  - ai/   (Ollama + prompts) │   │
-│  │   - utils/       │    │  - crawler/                 │   │
-│  └──────────────────┘    │  - db/   (rusqlite)         │   │
-│                          └────┬───────┬────────────────┘   │
-└───────────────────────────────┼───────┼────────────────────┘
-                                │       │
-                                ▼       ▼
-                    ┌───────────────┐  ┌──────────────────┐
-                    │ Ollama        │  │ ai_service       │
-                    │ 127.0.0.1     │  │ (Python/FastAPI) │
-                    │ :11434        │  │ 127.0.0.1:8765   │
-                    │ /api/chat     │  │ /embed           │
-                    │ /api/tags     │  │ /extract-text    │
-                    └───────────────┘  └──────────────────┘
-                                ▲              ▲
-                                └──────┬───────┘
-                                       │
-                                ┌──────┴──────┐
-                                │ Local SQLite│
-                                │  ezerpath.db│
-                                └─────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Tauri 2 desktop window  (1100×700, overlay title bar)                       │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  SolidJS + Tailwind 4   (app/src)                                      │  │
+│  │                                                                        │  │
+│  │  ┌─────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐             │  │
+│  │  │ScanView │  │ JobsView │  │WatchlistView │  │ EzerView │  views/     │  │
+│  │  └─────────┘  └──────────┘  └──────────────┘  └────┬─────┘             │  │
+│  │                                                    │                   │  │
+│  │  Sidebar · SettingsPanel · JobDetailsDrawer ·      │  components/      │  │
+│  │  ConfirmModal · AnimatedNumber                     │                   │  │
+│  │                                                    │                   │  │
+│  │  utils/  jobs.ts (scope filters) · mutations.ts (try/catch wrap)       │  │
+│  │          confirmations.ts · viewMotion.ts · fluidHover.ts              │  │
+│  │                                                                        │  │
+│  │  types/ipc-contract.ts   ◄── single source of truth, mirrors Rust      │  │
+│  └────────────────────────────────┬───────────────────────────────────────┘  │
+│                                   │  @tauri-apps/api  invoke()               │
+│                                   ▼                                          │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Tauri IPC bridge ── 32 #[tauri::command] entry points (sync request/  │  │
+│  │  response; no event channels — scans block on the awaited promise)    │  │
+│  └────────────────────────────────┬───────────────────────────────────────┘  │
+│                                   ▼                                          │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  Rust core   (app/src-tauri/src/lib.rs)                                │  │
+│  │                                                                        │  │
+│  │  ┌──────────────────────────────────────────────────────────────────┐  │  │
+│  │  │  AppState   (tauri-managed, shared by every command)             │  │  │
+│  │  │    ├─ db:               Arc<Database>                            │  │  │
+│  │  │    ├─ crawler:          Crawler                                  │  │  │
+│  │  │    ├─ ollama:           OllamaClient                             │  │  │
+│  │  │    ├─ sentence_service: SentenceServiceClient                    │  │  │
+│  │  │    └─ crawl_lock:       Mutex<()>   ← rejects concurrent scans   │  │  │
+│  │  └──────────────────────────────────────────────────────────────────┘  │  │
+│  │                                                                        │  │
+│  │   ai_chat command flow                                                 │  │
+│  │     ┌─ classify_intent(message, recent_history)                        │  │
+│  │     │                                                                  │  │
+│  │     ├─► Ranking   ─► db::get_top_paying_jobs   (SQL-first, no LLM)     │  │
+│  │     ├─► FollowUp  ─► resolve previously linked job ids → Ollama        │  │
+│  │     ├─► Describe  ─► use cached summaries if any → else Ollama         │  │
+│  │     └─► General   ─► OllamaClient::chat (streaming)                    │  │
+│  │                                                                        │  │
+│  │   Modules                                                              │  │
+│  │     ai/                                  crawler/         db/         │  │
+│  │      ├─ ollama.rs        stream NDJSON   └─ mod.rs        └─ mod.rs   │  │
+│  │      │                   + idle-gap         fetch +          schema + │  │
+│  │      │                   timeout            scraper +        queries +│  │
+│  │      ├─ prompts.rs       system prompts     resilience       migrations│  │
+│  │      ├─ ranking.rs       cosine_similarity  fallback                  │  │
+│  │      └─ sentence_                                                     │  │
+│  │         service.rs       HTTP client → ai_service                     │  │
+│  └─────────┬────────────────┬─────────────────┬─────────────────────────────┘
+└────────────┼────────────────┼─────────────────┼─────────────────────────────┘
+             │                │                 │
+             ▼                ▼                 ▼
+   ┌──────────────────┐  ┌──────────┐  ┌──────────────────────────┐
+   │ Ollama           │  │ Job      │  │ ai_service  (FastAPI)    │
+   │ 127.0.0.1:11434  │  │ boards   │  │ 127.0.0.1:8765           │
+   │  POST /api/chat  │  │ HTTPS    │  │  POST /embed             │
+   │   (stream=true)  │  │          │  │  POST /extract-text      │
+   │  GET  /api/tags  │  │          │  │  GET  /health            │
+   └──────────────────┘  └──────────┘  └─────────────┬────────────┘
+                                                     │
+                                                     ▼
+                                        ┌──────────────────────────┐
+                                        │ sentence-transformers    │
+                                        │ all-MiniLM-L6-v2         │
+                                        │ + pypdf + python-docx    │
+                                        └──────────────────────────┘
+
+   ┌────────────────────────────────────────────────────────────────────┐
+   │ Local SQLite — ezerpath.db                                         │
+   │ (~/Library/Application Support/com.genylgicalde.ezerpath/ on macOS)│
+   │                                                                    │
+   │  jobs · keywords · runs                  ── crawl state            │
+   │  resume_profiles                         ── uploaded resumes       │
+   │  job_embeddings · resume_embeddings      ── vector cache (per model)│
+   │  ai_conversations · ai_messages          ── chat history           │
+   │  ai_runs                                 ── AI telemetry           │
+   │  app_settings                            ── runtime config         │
+   └────────────────────────────────────────────────────────────────────┘
 ```
+
+A few honest notes about this picture:
+
+- **Scans are synchronous.** A `crawl_jobs` invocation holds the `crawl_lock` and only resolves after every keyword has been crawled. The frontend awaits one promise — there are no progress events. If you want a live progress bar, that's a future change.
+- **Two embedding tables, not one.** Jobs and resumes embed separately, both keyed by `(id, model_name)`, so you can swap embedding models without losing the others' cache.
+- **`ranking.rs` is tiny.** It's just `cosine_similarity`. The "SQL-first ranking" isn't a Rust ranking module — it's the `lib.rs` intent-router branch that asks SQLite to sort by normalized salary, bypassing Ollama entirely.
+- **No frontend query/cache layer.** `app/src/utils/` has small helpers (scope filters, a `runMutation` try/catch wrapper, motion easings) — not a TanStack-style cache. Views call `invoke()` directly and re-fetch on demand.
+- **Nothing leaves localhost.** The only outbound traffic is the crawler hitting job boards. Ollama, the embedding sidecar, and SQLite are all on `127.0.0.1`.
 
 ### Repository layout
 
@@ -63,8 +127,8 @@ ezerpath/
 │   ├── src/                   # SolidJS frontend
 │   │   ├── views/             # ScanView, JobsView, WatchlistView, EzerView
 │   │   ├── components/        # Sidebar, SettingsPanel, JobDetailsDrawer, …
-│   │   ├── types/             # IPC contract types (mirrors Rust structs)
-│   │   └── utils/             # mutations, queryClient, confirmations
+│   │   ├── types/             # ipc-contract.ts (mirrors Rust structs)
+│   │   └── utils/             # jobs, mutations, confirmations, viewMotion, fluidHover
 │   ├── src-tauri/             # Rust backend
 │   │   ├── src/
 │   │   │   ├── lib.rs         # All #[tauri::command] entry points + AppState
@@ -248,16 +312,17 @@ The streaming client uses `tokio::time::timeout` per `Response::chunk()` call, s
 
 SQLite file lives in the OS app-data dir (`~/Library/Application Support/com.genylgicalde.ezerpath/` on macOS). Tables include:
 
-- `jobs` — crawled listings
-- `runs` — crawl run history with status
-- `watchlist`
-- `ai_conversations`, `ai_messages` — chat history
-- `ai_runs` — telemetry for AI calls (latency, status, error)
-- `resume_profiles` — uploaded resumes + extracted text
-- `embeddings` — vector cache for jobs and resumes
-- `settings` — runtime config
+- `jobs` — crawled listings (`watchlisted` is a column on this table, not a separate table)
+- `keywords` — seed list of search terms used by the crawler
+- `runs` — crawl run history with `status`, `error_message`, `finished_at`, totals
+- `resume_profiles` — uploaded resumes + extracted/normalized text
+- `job_embeddings` — vector cache keyed by `(job_id, model_name)`
+- `resume_embeddings` — vector cache keyed by `(resume_id, model_name)`
+- `ai_conversations`, `ai_messages` — chat history (`ai_messages` carries `meta_json` and `linked_job_ids_json`)
+- `ai_runs` — telemetry for AI calls (task type, latency, status, error)
+- `app_settings` — runtime config key/value store
 
-Schema lives in `app/src-tauri/src/db/mod.rs`.
+Schema and migrations live in `app/src-tauri/src/db/mod.rs`.
 
 ---
 
