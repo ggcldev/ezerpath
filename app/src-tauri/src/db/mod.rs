@@ -636,6 +636,19 @@ impl Database {
         Ok(out)
     }
 
+    pub fn delete_ai_conversation(&self, conversation_id: i64) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM ai_messages WHERE conversation_id = ?1", params![conversation_id])?;
+        conn.execute("DELETE FROM ai_conversations WHERE id = ?1", params![conversation_id])?;
+        Ok(())
+    }
+
+    pub fn clear_ai_conversations(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute_batch("DELETE FROM ai_messages; DELETE FROM ai_conversations;")?;
+        Ok(())
+    }
+
     pub fn embedding_index_status(&self, embedding_model: &str) -> Result<EmbeddingIndexStatus, rusqlite::Error> {
         let conn = self.conn()?;
         let jobs_total: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;

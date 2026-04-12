@@ -381,6 +381,16 @@ async fn ai_get_conversation(state: State<'_, AppState>, conversation_id: i64) -
 }
 
 #[tauri::command]
+async fn ai_delete_conversation(state: State<'_, AppState>, conversation_id: i64) -> Result<(), String> {
+    state.db.delete_ai_conversation(conversation_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ai_clear_conversations(state: State<'_, AppState>) -> Result<(), String> {
+    state.db.clear_ai_conversations().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn ai_chat(
     state: State<'_, AppState>,
     conversation_id: Option<i64>,
@@ -672,6 +682,8 @@ pub fn run() {
             embedding_index_status,
             ai_list_conversations,
             ai_get_conversation,
+            ai_delete_conversation,
+            ai_clear_conversations,
             ai_chat,
             ai_match_jobs,
             ai_suggest_keywords,

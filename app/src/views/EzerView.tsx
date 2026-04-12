@@ -1,8 +1,9 @@
 import { createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Bot, MessageSquarePlus, SendHorizontal, Sparkles } from "lucide-solid";
+import { Bot, MessageSquarePlus, SendHorizontal, Sparkles, Trash2 } from "lucide-solid";
 import { animateViewEnter } from "../utils/viewMotion";
+import toast from "solid-toast";
 
 interface AiConversation {
   id: number;
@@ -73,6 +74,34 @@ export default function EzerView() {
     queueMicrotask(() => textareaEl?.focus());
   };
 
+  const deleteConversation = async (conversationId: number) => {
+    try {
+      await invoke("ai_delete_conversation", { conversationId });
+      if (selectedConversationId() === conversationId) {
+        setSelectedConversationId(null);
+        setMessages([]);
+      }
+      await loadConversations();
+      toast.success("Chat deleted.");
+    } catch (e: any) {
+      setLocalError(String(e));
+      toast.error("Failed to delete chat.");
+    }
+  };
+
+  const clearAllConversations = async () => {
+    try {
+      await invoke("ai_clear_conversations");
+      setSelectedConversationId(null);
+      setMessages([]);
+      await loadConversations();
+      toast.success("All Ezer chat history cleared.");
+    } catch (e: any) {
+      setLocalError(String(e));
+      toast.error("Failed to clear chat history.");
+    }
+  };
+
   const sendMessage = async () => {
     const text = draft().trim();
     if (!text || sending()) return;
@@ -137,25 +166,46 @@ export default function EzerView() {
               <MessageSquarePlus class="w-3.5 h-3.5" />
               New Chat
             </button>
+            <button
+              class="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-[12px] font-medium border border-mk-separator text-mk-secondary hover:bg-mk-fill hover:text-mk-pink transition-colors"
+              onClick={() => void clearAllConversations()}
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+              Clear All
+            </button>
           </div>
 
           <div class="flex-1 overflow-auto p-2 space-y-1">
             <For each={conversations()} fallback={<p class="px-2 py-2 text-[12px] text-mk-tertiary">No chats yet</p>}>
               {(c) => (
-                <button
+                <div
                   class={`w-full text-left px-2.5 py-2 rounded-lg transition-colors ${
                     selectedConversationId() === c.id
                       ? "bg-mk-fill text-mk-text border border-mk-separator"
-                      : "hover:bg-mk-fill text-mk-secondary border border-transparent"
+                      : "hover:bg-mk-fill text-mk-secondary border border-transparent cursor-pointer"
                   }`}
                   onClick={async () => {
                     setSelectedConversationId(c.id);
                     await loadMessages(c.id);
                   }}
                 >
-                  <p class="text-[12px] font-medium truncate">{c.title || "Ezer Chat"}</p>
-                  <p class="text-[10px] text-mk-tertiary mt-0.5">{prettyDate(c.updated_at)}</p>
-                </button>
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <p class="text-[12px] font-medium truncate">{c.title || "Ezer Chat"}</p>
+                      <p class="text-[10px] text-mk-tertiary mt-0.5">{prettyDate(c.updated_at)}</p>
+                    </div>
+                    <button
+                      class="shrink-0 w-6 h-6 inline-flex items-center justify-center rounded-md text-mk-tertiary hover:text-mk-pink hover:bg-mk-fill"
+                      aria-label="Delete chat"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void deleteConversation(c.id);
+                      }}
+                    >
+                      <Trash2 class="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
               )}
             </For>
           </div>
