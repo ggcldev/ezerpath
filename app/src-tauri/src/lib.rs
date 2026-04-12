@@ -65,6 +65,19 @@ fn extract_top_n(message: &str, default_n: usize) -> usize {
             return n;
         }
     }
+
+    // No explicit number — if the query uses singular form, return 1.
+    let has_plural = lower.contains("jobs")
+        || lower.contains("roles")
+        || lower.contains("positions")
+        || lower.contains("listings")
+        || lower.contains("results")
+        || lower.contains("options")
+        || lower.contains("matches");
+    if !has_plural {
+        return 1;
+    }
+
     default_n
 }
 
@@ -149,7 +162,10 @@ fn wants_descriptions(message: &str) -> bool {
 
 fn is_explicit_top_jobs_request(message: &str) -> bool {
     let lower = message.to_lowercase();
-    let has_top_marker = lower.contains("top") || lower.contains("best");
+    let has_top_marker = lower.contains("top")
+        || lower.contains("best")
+        || lower.contains("highest paying")
+        || lower.contains("highest-paying");
     if !has_top_marker {
         return false;
     }
@@ -157,18 +173,9 @@ fn is_explicit_top_jobs_request(message: &str) -> bool {
     let domain_terms = [
         "job", "jobs", "listing", "listings", "scan result", "scan results",
         "result", "results", "role", "roles", "position", "positions",
+        "option", "options", "match", "matches", "opportunit",
     ];
-    let has_domain = domain_terms.iter().any(|t| lower.contains(t));
-    if !has_domain {
-        return false;
-    }
-
-    // Avoid hijacking vague/meta messages that only mention "top 10".
-    let action_terms = [
-        "show", "give", "provide", "list", "recommend", "suggest",
-        "find", "what are", "which", "for me",
-    ];
-    action_terms.iter().any(|t| lower.contains(t))
+    domain_terms.iter().any(|t| lower.contains(t))
 }
 
 fn scoped_jobs_for_message(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Vec<Job> {
@@ -179,121 +186,40 @@ fn scoped_jobs_for_message(message: &str, all_jobs: &[Job], runs: &[ScanRun]) ->
             scoped.retain(|j| j.run_id == Some(latest_run_id));
         }
     }
+
+    // Filter by meaningful terms from the query that match job titles.
+    let stop_words = [
+        "can", "you", "provide", "the", "top", "best", "paying", "highest",
+        "show", "me", "give", "find", "list", "from", "latest", "last", "scan",
+        "job", "jobs", "listing", "listings", "role", "roles", "position", "positions",
+        "result", "results", "all", "my", "a", "an", "for", "with", "and", "or",
+        "in", "of", "to", "what", "are", "is", "it", "how", "new", "each",
+        "option", "options", "recommend", "suggest", "match", "matches",
+    ];
+    let query_terms: Vec<String> = lower
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .filter(|t| t.len() >= 2 && !stop_words.contains(&t.as_str()))
+        .collect();
+    if !query_terms.is_empty() {
+        let filtered: Vec<Job> = scoped
+            .iter()
+            .filter(|j| {
+                let title_lower = j.title.to_lowercase();
+                query_terms.iter().any(|t| title_lower.contains(t.as_str()))
+            })
+            .cloned()
+            .collect();
+        // Only apply filter if it doesn't eliminate all results.
+        if !filtered.is_empty() {
+            scoped = filtered;
+        }
+    }
+
     scoped.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
     scoped
 }
 
-fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Option<(String, Vec<AiJobCard>)> {
-    if !is_explicit_top_jobs_request(message) {
-        return None;
-    }
-
-    let scoped = scoped_jobs_for_message(message, all_jobs, runs);
-    if scoped.is_empty() {
-        return Some((
-            "I checked your current app data and there are no jobs in this scope yet.\n\
-Try running a new scan or relaxing your filters/keywords.".to_string(),
-            Vec::new(),
-        ));
-    }
-
-    let n = extract_top_n(message, 3);
-    let include_descriptions = wants_descriptions(message);
-    let top = scoped.into_iter().take(n).collect::<Vec<_>>();
-    let mut lines = vec![format!("Top {} jobs from your app data:", top.len())];
-    let cards = top
-        .iter()
-        .map(|job| AiJobCard {
-            job_id: job.id.unwrap_or_default(),
-            title: job.title.clone(),
-            company: if job.company.is_empty() {
-                "Unknown company".to_string()
-            } else {
-                job.company.clone()
-            },
-            pay: if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() },
-            posted_at: if job.posted_at.is_empty() {
-                "-".to_string()
-            } else {
-                job.posted_at.clone()
-            },
-            url: job.url.clone(),
-            logo_url: job.company_logo_url.clone(),
-        })
-        .collect::<Vec<_>>();
-    for (i, job) in top.iter().enumerate() {
-        lines.push(format!("{}. {}", i + 1, job.title));
-        if include_descriptions {
-            lines.push(format!("   - {}", short_description(&job.summary)));
-        }
-    }
-    lines.push("Open any card below for full details.".to_string());
-    Some((lines.join("\n"), cards))
-}
-
-fn try_local_descriptions_followup_reply(
-    message: &str,
-    recent: &[AiMessage],
-    all_jobs: &[Job],
-    runs: &[ScanRun],
-) -> Option<(String, Vec<AiJobCard>)> {
-    let lower = message.to_lowercase();
-    let asks_description = wants_descriptions(message)
-        || (lower.contains("where") && lower.contains("description"));
-    if !asks_description {
-        return None;
-    }
-
-    // Find last user query that asked for top/best jobs.
-    let last_top_user_query = recent
-        .iter()
-        .rev()
-        .find(|m| m.role == "user" && {
-            let t = m.content.to_lowercase();
-            (t.contains("top") || t.contains("best")) && t.contains("job")
-        })
-        .map(|m| m.content.clone());
-
-    let base_query = last_top_user_query.unwrap_or_else(|| message.to_string());
-    let scoped = scoped_jobs_for_message(&base_query, all_jobs, runs);
-    if scoped.is_empty() {
-        return Some((
-            "I checked your current app data and there are no jobs in this scope yet.".to_string(),
-            Vec::new(),
-        ));
-    }
-
-    let n = extract_top_n(&base_query, 5);
-    let top = scoped.into_iter().take(n).collect::<Vec<_>>();
-    let cards = top
-        .iter()
-        .map(|job| AiJobCard {
-            job_id: job.id.unwrap_or_default(),
-            title: job.title.clone(),
-            company: if job.company.is_empty() {
-                "Unknown company".to_string()
-            } else {
-                job.company.clone()
-            },
-            pay: if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() },
-            posted_at: if job.posted_at.is_empty() {
-                "-".to_string()
-            } else {
-                job.posted_at.clone()
-            },
-            url: job.url.clone(),
-            logo_url: job.company_logo_url.clone(),
-        })
-        .collect::<Vec<_>>();
-
-    let mut lines = vec![format!("Short descriptions for top {} jobs:", top.len())];
-    for (i, job) in top.iter().enumerate() {
-        lines.push(format!("{}. {}", i + 1, job.title));
-        lines.push(format!("   - {}", short_description(&job.summary)));
-    }
-    lines.push("Open any card below for full details.".to_string());
-    Some((lines.join("\n"), cards))
-}
 
 fn out_of_scope_reply() -> String {
     "I’m Ezer, and I’m only made for this app. I can help with scanned jobs, resume matching, keyword suggestions, and job summaries inside Ezerpath.".to_string()
@@ -315,17 +241,6 @@ fn is_prompt_injection_attempt(message: &str) -> bool {
     patterns.iter().any(|p| lower.contains(p))
 }
 
-fn has_recent_app_context(history: &[AiMessage]) -> bool {
-    let app_terms = [
-        "job", "jobs", "scan", "keyword", "watchlist", "resume", "match", "summary",
-        "posted", "salary", "listing", "listings", "top", "best", "ezer",
-        "jobs from your app data", "open any card below",
-    ];
-    history.iter().rev().take(8).any(|m| {
-        let t = m.content.to_lowercase();
-        app_terms.iter().any(|k| t.contains(k))
-    })
-}
 
 fn is_follow_up_query(message: &str) -> bool {
     let lower = message.to_lowercase();
@@ -337,45 +252,31 @@ fn is_follow_up_query(message: &str) -> bool {
     followups.iter().any(|f| lower.contains(f))
 }
 
-fn is_app_scope_query(message: &str, history: &[AiMessage]) -> bool {
+fn is_app_scope_query(message: &str, _history: &[AiMessage]) -> bool {
     let lower = message.to_lowercase();
     if lower.trim().is_empty() {
         return true;
     }
 
-    // Strong app-domain anchors.
-    let app_terms = [
-        "job", "jobs", "scan", "keyword", "watchlist", "resume", "profile",
-        "match", "summary", "summarize", "posted", "pay", "salary",
-        "onlinejobs", "application", "listing", "listings", "ezer",
-        "all jobs", "latest scan",
-    ];
-    // Common clearly out-of-scope intents.
+    // Only block clearly off-topic queries. Everything else is allowed —
+    // the system prompt constrains Ezer to app data.
     let outside_terms = [
-        "weather", "news", "sports", "bitcoin", "crypto", "stock", "stocks",
-        "movie", "music", "recipe", "travel", "translate", "math problem",
-        "who is", "president", "prime minister", "celebrity", "wikipedia",
-        "youtube", "reddit",
+        "weather forecast", "news today", "sports score", "bitcoin price",
+        "crypto price", "stock price", "movie review", "recipe for",
+        "translate to", "math problem", "who is the president",
+        "prime minister", "write me a poem", "tell me a joke",
     ];
     if outside_terms.iter().any(|t| lower.contains(t)) {
         return false;
     }
 
-    if app_terms.iter().any(|t| lower.contains(t)) {
-        return true;
-    }
-
-    // Allow short follow-ups when conversation is clearly within app context.
-    if is_follow_up_query(message) && has_recent_app_context(history) {
-        return true;
-    }
-
-    // Default conservative behavior: if we don't detect app intent, block.
-    false
+    true
 }
 
 fn response_violates_app_scope(reply: &str) -> bool {
     let lower = reply.to_lowercase();
+    // Only block replies where the model ignores the system prompt and
+    // claims it cannot access the data we already provided.
     let bad_phrases = [
         "as a large language model",
         "as an ai language model",
@@ -383,19 +284,184 @@ fn response_violates_app_scope(reply: &str) -> bool {
         "i cannot access",
         "i don't have access",
         "i do not have access",
-        "i can browse",
-        "i can't browse",
-        "real-time access",
-        "external website",
-        "external websites",
-        "job board",
-        "job boards",
-        "linkedin",
-        "indeed",
-        "monster",
-        "i need a little more information",
     ];
     bad_phrases.iter().any(|p| lower.contains(p))
+}
+
+// ── Intent Router ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+enum ChatIntent {
+    /// "top 3 paying SEO jobs" → SQL ORDER BY salary_min DESC
+    Ranking { n: usize, title_terms: Vec<String> },
+    /// Follow-up on previous results: "describe them", "which one pays more"
+    FollowUp,
+    /// "describe the SEO jobs", "summarize the first 3"
+    Describe { n: usize },
+    /// Everything else → Ollama with full job context
+    General,
+}
+
+fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
+    let lower = message.to_lowercase();
+
+    // Follow-up detection: short message referencing prior results
+    let followup_cues = [
+        "describe them", "tell me more", "more details", "which one",
+        "compare them", "what about", "summarize them", "explain them",
+        "short description", "their description", "about these", "about those",
+    ];
+    let is_followup = followup_cues.iter().any(|c| lower.contains(c))
+        || (lower.len() < 60 && (wants_descriptions(&lower) || is_follow_up_query(&lower)));
+
+    // Check if previous assistant message has linked jobs
+    let has_linked = history.iter().rev()
+        .find(|m| m.role == "assistant")
+        .map(|m| {
+            serde_json::from_str::<Vec<i64>>(&m.linked_job_ids_json)
+                .map(|ids| !ids.is_empty())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    if is_followup && has_linked {
+        if wants_descriptions(&lower) {
+            let prev_n = history.iter().rev()
+                .find(|m| m.role == "assistant")
+                .and_then(|m| serde_json::from_str::<Vec<i64>>(&m.linked_job_ids_json).ok())
+                .map(|ids| ids.len())
+                .unwrap_or(3);
+            return ChatIntent::Describe { n: prev_n };
+        }
+        return ChatIntent::FollowUp;
+    }
+
+    // Description request with explicit target
+    if wants_descriptions(&lower) && !is_followup {
+        let n = extract_top_n(message, 3);
+        return ChatIntent::Describe { n };
+    }
+
+    // Ranking: "top N", "best", "highest paying"
+    if is_explicit_top_jobs_request(message) {
+        let n = extract_top_n(message, 3);
+        let terms = extract_query_terms(&lower);
+        return ChatIntent::Ranking { n, title_terms: terms };
+    }
+
+    ChatIntent::General
+}
+
+fn extract_query_terms(lower: &str) -> Vec<String> {
+    let stop_words = [
+        "can", "you", "provide", "the", "top", "best", "paying", "highest",
+        "show", "me", "give", "find", "list", "from", "latest", "last", "scan",
+        "job", "jobs", "listing", "listings", "role", "roles", "position", "positions",
+        "result", "results", "all", "my", "a", "an", "for", "with", "and", "or",
+        "in", "of", "to", "what", "are", "is", "it", "how", "new", "each",
+        "option", "options", "recommend", "suggest", "match", "matches",
+        "describe", "description", "descriptions", "summary", "summarize",
+        "details", "them", "these", "those", "tell", "more", "about",
+        "short", "their", "compare", "explain", "which", "one",
+    ];
+    lower
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .filter(|t| t.len() >= 2 && !stop_words.contains(&t.as_str()))
+        .collect()
+}
+
+fn get_linked_job_ids(history: &[AiMessage]) -> Vec<i64> {
+    history.iter().rev()
+        .find(|m| m.role == "assistant")
+        .and_then(|m| serde_json::from_str::<Vec<i64>>(&m.linked_job_ids_json).ok())
+        .unwrap_or_default()
+}
+
+fn jobs_to_cards(jobs: &[Job]) -> Vec<AiJobCard> {
+    jobs.iter()
+        .map(|job| AiJobCard {
+            job_id: job.id.unwrap_or_default(),
+            title: job.title.clone(),
+            company: if job.company.is_empty() { "Unknown company".to_string() } else { job.company.clone() },
+            pay: if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() },
+            posted_at: if job.posted_at.is_empty() { "-".to_string() } else { job.posted_at.clone() },
+            url: job.url.clone(),
+            logo_url: job.company_logo_url.clone(),
+        })
+        .collect()
+}
+
+fn format_ranking_reply(jobs: &[Job], include_descriptions: bool) -> String {
+    if jobs.is_empty() {
+        return "No jobs matched your criteria. Try running a scan or adjusting your keywords.".to_string();
+    }
+    let mut lines = vec![format!("Top {} jobs by pay:", jobs.len())];
+    for (i, job) in jobs.iter().enumerate() {
+        let pay_display = if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() };
+        lines.push(format!("{}. {} — {} ({})", i + 1, job.title, job.company, pay_display));
+        if include_descriptions {
+            lines.push(format!("   {}", short_description(&job.summary)));
+        }
+    }
+    lines.push("Open any card below for full details.".to_string());
+    lines.join("\n")
+}
+
+fn format_describe_reply(jobs: &[Job]) -> String {
+    if jobs.is_empty() {
+        return "No jobs found to describe.".to_string();
+    }
+    let mut lines = vec![format!("Descriptions for {} jobs:", jobs.len())];
+    for (i, job) in jobs.iter().enumerate() {
+        lines.push(format!("{}. {}", i + 1, job.title));
+        lines.push(format!("   {}", short_description(&job.summary)));
+    }
+    lines.push("Open any card below for full details.".to_string());
+    lines.join("\n")
+}
+
+fn build_ollama_system_prompt(jobs: &[Job]) -> String {
+    let job_context: String = jobs.iter().take(25).map(|j| {
+        let brief = if j.summary.is_empty() {
+            "-".to_string()
+        } else {
+            let cleaned = sanitize_text(&j.summary);
+            if cleaned.chars().count() > 150 {
+                let mut s = String::new();
+                for ch in cleaned.chars().take(147) { s.push(ch); }
+                s.push_str("...");
+                s
+            } else {
+                cleaned
+            }
+        };
+        format!(
+            "- [job_id={}] Title: {} | Company: {} | Pay: {} | Keyword: {} | Posted: {} | URL: {} | Summary: {}",
+            j.id.unwrap_or_default(),
+            j.title,
+            if j.company.is_empty() { "-" } else { &j.company },
+            if j.pay.is_empty() { "-" } else { &j.pay },
+            if j.keyword.is_empty() { "-" } else { &j.keyword },
+            if j.posted_at.is_empty() { "-" } else { &j.posted_at },
+            if j.url.is_empty() { "-" } else { &j.url },
+            brief
+        )
+    }).collect::<Vec<_>>().join("\n");
+
+    format!(
+        "{}\n\nAdditional rules:\n\
+- ONLY use the local job context below to answer. Do not invent or assume data not present.\n\
+- When listing jobs, always include the exact Title as shown in context.\n\
+- If the answer is uncertain or data is missing, say what is missing and suggest a scan.\n\
+- Use bullets/numbered lists for multiple items; avoid long paragraphs.\n\
+- No fluff, no generic disclaimers, no mentions of external platforms.\n\
+\n\
+Local job context ({} jobs):\n{}",
+        system_prompt_for_job_chat(),
+        jobs.len(),
+        if job_context.is_empty() { "No jobs available in current filter scope.".to_string() } else { job_context }
+    )
 }
 
 fn assistant_meta(provider: &str, scope: Option<&str>, cards: Option<&[AiJobCard]>) -> String {
@@ -432,12 +498,51 @@ fn compact_reply_text(reply: &str) -> String {
     }
     let mut compact = out_lines.join("\n").trim().to_string();
     // Hard cap for readability in chat; keep concise unless user asks for depth.
-    const MAX_LEN: usize = 1800;
+    const MAX_LEN: usize = 3000;
     if compact.len() > MAX_LEN {
         compact.truncate(MAX_LEN);
         compact.push_str("\n\n(Truncated for readability.)");
     }
     compact
+}
+
+fn extract_cards_from_reply(reply: &str, jobs: &[Job]) -> Vec<AiJobCard> {
+    let lower_reply = reply.to_lowercase();
+    let mut cards: Vec<AiJobCard> = Vec::new();
+
+    for job in jobs {
+        let job_id = job.id.unwrap_or_default();
+        if cards.iter().any(|c| c.job_id == job_id) {
+            continue;
+        }
+        let lower_title = job.title.to_lowercase();
+        let title_match = lower_title.len() >= 5 && lower_reply.contains(&lower_title);
+        let id_match = lower_reply.contains(&format!("job_id={}", job_id));
+        if title_match || id_match {
+            cards.push(AiJobCard {
+                job_id,
+                title: job.title.clone(),
+                company: if job.company.is_empty() {
+                    "Unknown company".to_string()
+                } else {
+                    job.company.clone()
+                },
+                pay: if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() },
+                posted_at: if job.posted_at.is_empty() {
+                    "-".to_string()
+                } else {
+                    job.posted_at.clone()
+                },
+                url: job.url.clone(),
+                logo_url: job.company_logo_url.clone(),
+            });
+            if cards.len() >= 10 {
+                break;
+            }
+        }
+    }
+
+    cards
 }
 
 struct AppState {
@@ -726,7 +831,7 @@ async fn ai_chat(
 
     state
         .db
-        .append_ai_message(convo_id, "user", &message, "{}", &now)
+        .append_ai_message(convo_id, "user", &message, "{}", &[], &now)
         .map_err(|e| e.to_string())?;
 
     let history = state.db.get_ai_messages(convo_id).map_err(|e| e.to_string())?;
@@ -742,6 +847,7 @@ async fn ai_chat(
                 "assistant",
                 &reply,
                 &assistant_meta("local", Some("blocked_injection"), None),
+                &[],
                 &now,
             )
             .map_err(|e| e.to_string())?;
@@ -763,6 +869,7 @@ async fn ai_chat(
                 "assistant",
                 &reply,
                 &assistant_meta("local", Some("blocked"), None),
+                &[],
                 &now,
             )
             .map_err(|e| e.to_string())?;
@@ -774,8 +881,8 @@ async fn ai_chat(
     }
 
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
-    let limit_history = 12usize;
-    let recent = if history.len() > limit_history {
+    let limit_history = 8usize;
+    let recent: Vec<AiMessage> = if history.len() > limit_history {
         history[(history.len() - limit_history)..].to_vec()
     } else {
         history
@@ -789,80 +896,141 @@ async fn ai_chat(
         .get_jobs(keyword.as_deref(), watchlisted_only, days_ago)
         .map_err(|e| e.to_string())?;
 
-    let runs = state.db.get_runs().map_err(|e| e.to_string())?;
-    // Handle follow-up description requests first so they don't get shadowed by generic top-N replies.
-    if let Some((local_reply, cards)) = try_local_descriptions_followup_reply(&message, &recent, &jobs, &runs) {
-        let latency = started.elapsed().as_millis() as i64;
-        let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
-        state
-            .db
-            .append_ai_message(
-                convo_id,
-                "assistant",
-                &local_reply,
-                &assistant_meta("local", None, Some(&cards)),
-                &now,
-            )
-            .map_err(|e| e.to_string())?;
-        return Ok(AiChatResponse {
-            conversation_id: convo_id,
-            reply: local_reply,
-            cards: if cards.is_empty() { None } else { Some(cards) },
-        });
-    }
-    if let Some((local_reply, cards)) = try_local_top_jobs_reply(&message, &jobs, &runs) {
-        let latency = started.elapsed().as_millis() as i64;
-        let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
-        state
-            .db
-            .append_ai_message(
-                convo_id,
-                "assistant",
-                &local_reply,
-                &assistant_meta("local", None, Some(&cards)),
-                &now,
-            )
-            .map_err(|e| e.to_string())?;
-        return Ok(AiChatResponse {
-            conversation_id: convo_id,
-            reply: local_reply,
-            cards: if cards.is_empty() { None } else { Some(cards) },
-        });
+    // ── Intent Router ──────────────────────────────────────────────────────
+    let intent = classify_intent(&message, &recent);
+
+    match intent {
+        ChatIntent::Ranking { n, ref title_terms } => {
+            // SQL-first: query DB sorted by salary_min DESC
+            let sql_jobs = state.db
+                .get_top_paying_jobs(keyword.as_deref(), title_terms, n)
+                .map_err(|e| e.to_string())?;
+
+            // If SQL returned results with salary data, use them directly
+            if !sql_jobs.is_empty() {
+                let include_desc = wants_descriptions(&message);
+                let reply = format_ranking_reply(&sql_jobs, include_desc);
+                let cards = jobs_to_cards(&sql_jobs);
+                let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                let latency = started.elapsed().as_millis() as i64;
+                let _ = state.db.log_ai_run("chat", latency, "success_sql", None, &now);
+                state.db.append_ai_message(
+                    convo_id, "assistant", &reply,
+                    &assistant_meta("sql", None, Some(&cards)),
+                    &linked_ids, &now,
+                ).map_err(|e| e.to_string())?;
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+            }
+
+            // Fallback: sort in-memory by scraped_at (recency) with title filtering
+            let scoped = scoped_jobs_for_message(&message, &jobs, &state.db.get_runs().map_err(|e| e.to_string())?);
+            let top: Vec<Job> = scoped.into_iter().take(n).collect();
+            if !top.is_empty() {
+                let include_desc = wants_descriptions(&message);
+                let reply = format_ranking_reply(&top, include_desc);
+                let cards = jobs_to_cards(&top);
+                let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                let latency = started.elapsed().as_millis() as i64;
+                let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
+                state.db.append_ai_message(
+                    convo_id, "assistant", &reply,
+                    &assistant_meta("local", None, Some(&cards)),
+                    &linked_ids, &now,
+                ).map_err(|e| e.to_string())?;
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+            }
+            // No jobs at all — fall through to Ollama
+        }
+
+        ChatIntent::FollowUp => {
+            // Use linked job IDs from previous assistant message
+            let prev_ids = get_linked_job_ids(&recent);
+            if !prev_ids.is_empty() {
+                let linked_jobs = state.db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
+                if !linked_jobs.is_empty() {
+                    // Build focused context for Ollama with only the linked jobs
+                    let system = build_ollama_system_prompt(&linked_jobs);
+                    let mut msgs: Vec<ChatMessage> = vec![ChatMessage { role: "system".to_string(), content: system }];
+                    for msg in &recent {
+                        if msg.role == "user" || msg.role == "assistant" {
+                            msgs.push(ChatMessage { role: msg.role.clone(), content: msg.content.clone() });
+                        }
+                    }
+                    let ollama_reply = state.ollama.chat(&cfg, msgs).await;
+                    match ollama_reply {
+                        Ok(text) => {
+                            let mut reply = compact_reply_text(&text);
+                            if response_violates_app_scope(&reply) { reply = out_of_scope_reply(); }
+                            let cards = jobs_to_cards(&linked_jobs);
+                            let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                            let latency = started.elapsed().as_millis() as i64;
+                            let _ = state.db.log_ai_run("chat", latency, "success_ollama_followup", None, &now);
+                            state.db.append_ai_message(
+                                convo_id, "assistant", &reply,
+                                &assistant_meta("ollama", None, Some(&cards)),
+                                &linked_ids, &now,
+                            ).map_err(|e| e.to_string())?;
+                            return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                        }
+                        Err(_) => {} // fall through to general Ollama path
+                    }
+                }
+            }
+        }
+
+        ChatIntent::Describe { n } => {
+            // First try linked jobs from previous message
+            let prev_ids = get_linked_job_ids(&recent);
+            let target_jobs = if !prev_ids.is_empty() {
+                let linked = state.db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
+                if !linked.is_empty() { linked } else { Vec::new() }
+            } else {
+                Vec::new()
+            };
+
+            let target_jobs = if target_jobs.is_empty() {
+                // No linked jobs — scope from message
+                let runs = state.db.get_runs().map_err(|e| e.to_string())?;
+                let scoped = scoped_jobs_for_message(&message, &jobs, &runs);
+                scoped.into_iter().take(n).collect::<Vec<_>>()
+            } else {
+                target_jobs
+            };
+
+            if !target_jobs.is_empty() {
+                // If any job has a summary, build local reply
+                let has_summaries = target_jobs.iter().any(|j| !j.summary.trim().is_empty());
+                if has_summaries {
+                    let reply = format_describe_reply(&target_jobs);
+                    let cards = jobs_to_cards(&target_jobs);
+                    let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                    let latency = started.elapsed().as_millis() as i64;
+                    let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
+                    state.db.append_ai_message(
+                        convo_id, "assistant", &reply,
+                        &assistant_meta("local", None, Some(&cards)),
+                        &linked_ids, &now,
+                    ).map_err(|e| e.to_string())?;
+                    return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                }
+                // No summaries — fall through to Ollama with targeted context
+            }
+        }
+
+        ChatIntent::General => {}
     }
 
-    let job_context = jobs
-        .iter()
-        .take(40)
-        .map(|j| {
-            format!(
-                "- [job_id={}] Title: {} | Company: {} | Pay: {} | Keyword: {} | Posted: {} | URL: {} | Summary: {}",
-                j.id.unwrap_or_default(),
-                j.title,
-                if j.company.is_empty() { "-" } else { &j.company },
-                if j.pay.is_empty() { "-" } else { &j.pay },
-                if j.keyword.is_empty() { "-" } else { &j.keyword },
-                if j.posted_at.is_empty() { "-" } else { &j.posted_at },
-                if j.url.is_empty() { "-" } else { &j.url },
-                if j.summary.is_empty() { "-" } else { &j.summary }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
+    // ── Ollama Fallback (General path) ─────────────────────────────────────
+    let system = build_ollama_system_prompt(&jobs);
     let mut ollama_messages: Vec<ChatMessage> = vec![ChatMessage {
         role: "system".to_string(),
-        content: format!(
-            "{}\n\nRules:\n- Only use local job context below.\n- If the answer is uncertain or missing, say what is missing.\n- Recommend specific next scan keywords when needed.\n- Keep outputs concise, direct, and well-formatted.\n- Use bullets/numbered list for multiple items; avoid long paragraphs.\n- No fluff, no generic disclaimers.\n\nLocal job context ({} rows):\n{}",
-            system_prompt_for_job_chat(),
-            jobs.len(),
-            if job_context.is_empty() { "No jobs available in current filter scope.".to_string() } else { job_context }
-        ),
+        content: system,
     }];
-    for msg in recent {
+    for msg in &recent {
         if msg.role == "user" || msg.role == "assistant" || msg.role == "system" {
             ollama_messages.push(ChatMessage {
-                role: msg.role,
-                content: msg.content,
+                role: msg.role.clone(),
+                content: msg.content.clone(),
             });
         }
     }
@@ -883,44 +1051,32 @@ Quick checks:\n\
 4. Retry your prompt",
                 cfg.ollama_base_url
             );
-            state
-                .db
-                .append_ai_message(
-                    convo_id,
-                    "assistant",
-                    &fallback,
-                    &assistant_meta("local", Some("ollama_unreachable"), None),
-                    &now,
-                )
-                .map_err(|e| e.to_string())?;
-            return Ok(AiChatResponse {
-                conversation_id: convo_id,
-                reply: fallback,
-                cards: None,
-            });
+            state.db.append_ai_message(
+                convo_id, "assistant", &fallback,
+                &assistant_meta("local", Some("ollama_unreachable"), None),
+                &[], &now,
+            ).map_err(|e| e.to_string())?;
+            return Ok(AiChatResponse { conversation_id: convo_id, reply: fallback, cards: None });
         }
     };
     if response_violates_app_scope(&reply) {
         reply = out_of_scope_reply();
     }
     reply = compact_reply_text(&reply);
+    let ollama_cards = extract_cards_from_reply(&reply, &jobs);
+    let linked_ids: Vec<i64> = ollama_cards.iter().map(|c| c.job_id).collect();
     let latency = started.elapsed().as_millis() as i64;
     let _ = state.db.log_ai_run("chat", latency, "success_ollama", None, &now);
-    state
-        .db
-        .append_ai_message(
-            convo_id,
-            "assistant",
-            &reply,
-            &assistant_meta("ollama", None, None),
-            &now,
-        )
-        .map_err(|e| e.to_string())?;
+    state.db.append_ai_message(
+        convo_id, "assistant", &reply,
+        &assistant_meta("ollama", None, if ollama_cards.is_empty() { None } else { Some(&ollama_cards) }),
+        &linked_ids, &now,
+    ).map_err(|e| e.to_string())?;
 
     Ok(AiChatResponse {
         conversation_id: convo_id,
         reply,
-        cards: None,
+        cards: if ollama_cards.is_empty() { None } else { Some(ollama_cards) },
     })
 }
 
