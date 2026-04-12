@@ -968,7 +968,15 @@ async fn ai_chat(
     if is_prompt_injection_attempt(&message) {
         let reply = "I can’t follow that request. I only operate within this app’s scope and policy.".to_string();
         let latency = started.elapsed().as_millis() as i64;
-        let _ = state.db.log_ai_run("chat", latency, "blocked_injection", Some("prompt_injection_detected"), &now);
+        let _ = state.db.log_ai_run(&AiRunLog {
+            task_type: "chat",
+            latency_ms: latency,
+            status: "blocked_injection",
+            error: Some("prompt_injection_detected"),
+            created_at: &now,
+            route: Some("blocked_injection"),
+            ..Default::default()
+        });
         state
             .db
             .append_ai_message(
@@ -990,7 +998,15 @@ async fn ai_chat(
     if !is_app_scope_query(&message, &history) {
         let reply = out_of_scope_reply();
         let latency = started.elapsed().as_millis() as i64;
-        let _ = state.db.log_ai_run("chat", latency, "blocked_scope", Some("out_of_scope_query"), &now);
+        let _ = state.db.log_ai_run(&AiRunLog {
+            task_type: "chat",
+            latency_ms: latency,
+            status: "blocked_scope",
+            error: Some("out_of_scope_query"),
+            created_at: &now,
+            route: Some("blocked_scope"),
+            ..Default::default()
+        });
         state
             .db
             .append_ai_message(
@@ -1020,6 +1036,7 @@ async fn ai_chat(
     let keyword = filters.as_ref().and_then(|f| f.keyword.clone());
     let watchlisted_only = filters.as_ref().and_then(|f| f.watchlisted_only).unwrap_or(false);
     let days_ago = filters.as_ref().and_then(|f| f.days_ago);
+    let retrieval_start = std::time::Instant::now();
     let jobs = state
         .db
         .get_jobs(keyword.as_deref(), watchlisted_only, days_ago)
@@ -1027,6 +1044,12 @@ async fn ai_chat(
 
     // ── Intent Router ──────────────────────────────────────────────────────
     let intent = classify_intent(&message, &recent);
+    let intent_str = match &intent {
+        ChatIntent::Ranking { .. } => "ranking",
+        ChatIntent::FollowUp => "followup",
+        ChatIntent::Describe { .. } => "describe",
+        ChatIntent::General => "general",
+    };
 
     match intent {
         ChatIntent::Ranking { n, ref title_terms } => {
@@ -1041,8 +1064,21 @@ async fn ai_chat(
                 let reply = format_ranking_reply(&sql_jobs, include_desc, true);
                 let cards = jobs_to_cards(&sql_jobs);
                 let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                let candidate_ids: Vec<i64> = sql_jobs.iter().filter_map(|j| j.id).collect();
+                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
                 let latency = started.elapsed().as_millis() as i64;
-                let _ = state.db.log_ai_run("chat", latency, "success_sql", None, &now);
+                let _ = state.db.log_ai_run(&AiRunLog {
+                    task_type: "chat",
+                    latency_ms: latency,
+                    status: "success_sql",
+                    created_at: &now,
+                    intent: Some(intent_str),
+                    route: Some("sql_first"),
+                    candidate_job_ids: Some(&candidate_ids),
+                    final_job_ids: Some(&linked_ids),
+                    retrieval_ms: Some(retrieval_ms),
+                    ..Default::default()
+                });
                 state.db.append_ai_message(
                     convo_id, "assistant", &reply,
                     &assistant_meta("sql", None, Some(&cards)),
@@ -1061,8 +1097,21 @@ async fn ai_chat(
                 let reply = format_ranking_reply(&top, include_desc, has_pay_scores);
                 let cards = jobs_to_cards(&top);
                 let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                let candidate_ids: Vec<i64> = top.iter().filter_map(|j| j.id).collect();
+                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
                 let latency = started.elapsed().as_millis() as i64;
-                let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
+                let _ = state.db.log_ai_run(&AiRunLog {
+                    task_type: "chat",
+                    latency_ms: latency,
+                    status: "success_local",
+                    created_at: &now,
+                    intent: Some(intent_str),
+                    route: Some("local_ranking"),
+                    candidate_job_ids: Some(&candidate_ids),
+                    final_job_ids: Some(&linked_ids),
+                    retrieval_ms: Some(retrieval_ms),
+                    ..Default::default()
+                });
                 state.db.append_ai_message(
                     convo_id, "assistant", &reply,
                     &assistant_meta("local", None, Some(&cards)),
@@ -1087,7 +1136,11 @@ async fn ai_chat(
                             msgs.push(ChatMessage { role: msg.role.clone(), content: msg.content.clone() });
                         }
                     }
+                    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+                    let candidate_ids: Vec<i64> = linked_jobs.iter().filter_map(|j| j.id).collect();
+                    let llm_start = std::time::Instant::now();
                     let ollama_reply = state.ollama.chat(&cfg, msgs).await;
+                    let llm_ms = llm_start.elapsed().as_millis() as i64;
                     match ollama_reply {
                         Ok(text) => {
                             let mut reply = compact_reply_text(&text);
@@ -1095,7 +1148,19 @@ async fn ai_chat(
                             let cards = jobs_to_cards(&linked_jobs);
                             let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
                             let latency = started.elapsed().as_millis() as i64;
-                            let _ = state.db.log_ai_run("chat", latency, "success_ollama_followup", None, &now);
+                            let _ = state.db.log_ai_run(&AiRunLog {
+                                task_type: "chat",
+                                latency_ms: latency,
+                                status: "success_ollama_followup",
+                                created_at: &now,
+                                intent: Some(intent_str),
+                                route: Some("ollama_followup"),
+                                candidate_job_ids: Some(&candidate_ids),
+                                final_job_ids: Some(&linked_ids),
+                                retrieval_ms: Some(retrieval_ms),
+                                llm_ms: Some(llm_ms),
+                                ..Default::default()
+                            });
                             state.db.append_ai_message(
                                 convo_id, "assistant", &reply,
                                 &assistant_meta("ollama", None, Some(&cards)),
@@ -1135,8 +1200,21 @@ async fn ai_chat(
                     let reply = format_describe_reply(&target_jobs);
                     let cards = jobs_to_cards(&target_jobs);
                     let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                    let candidate_ids: Vec<i64> = target_jobs.iter().filter_map(|j| j.id).collect();
+                    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
                     let latency = started.elapsed().as_millis() as i64;
-                    let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
+                    let _ = state.db.log_ai_run(&AiRunLog {
+                        task_type: "chat",
+                        latency_ms: latency,
+                        status: "success_local",
+                        created_at: &now,
+                        intent: Some(intent_str),
+                        route: Some("local_describe"),
+                        candidate_job_ids: Some(&candidate_ids),
+                        final_job_ids: Some(&linked_ids),
+                        retrieval_ms: Some(retrieval_ms),
+                        ..Default::default()
+                    });
                     state.db.append_ai_message(
                         convo_id, "assistant", &reply,
                         &assistant_meta("local", None, Some(&cards)),
@@ -1166,12 +1244,28 @@ async fn ai_chat(
         }
     }
 
+    let candidate_ids: Vec<i64> = jobs.iter().filter_map(|j| j.id).collect();
+    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+    let llm_start = std::time::Instant::now();
     let ollama_reply = state.ollama.chat(&cfg, ollama_messages).await;
+    let llm_ms = llm_start.elapsed().as_millis() as i64;
     let mut reply = match ollama_reply {
         Ok(text) => text,
         Err(err) => {
             let latency = started.elapsed().as_millis() as i64;
-            let _ = state.db.log_ai_run("chat", latency, "failed", Some(&err), &now);
+            let _ = state.db.log_ai_run(&AiRunLog {
+                task_type: "chat",
+                latency_ms: latency,
+                status: "failed",
+                error: Some(&err),
+                created_at: &now,
+                intent: Some(intent_str),
+                route: Some("ollama_streaming"),
+                candidate_job_ids: Some(&candidate_ids),
+                retrieval_ms: Some(retrieval_ms),
+                llm_ms: Some(llm_ms),
+                ..Default::default()
+            });
             let err_lower = err.to_lowercase();
             let fallback = if err_lower.contains("timed out") || err_lower.contains("error sending request") {
                 format!(
@@ -1229,7 +1323,19 @@ Technical detail: {}",
     let ollama_cards = extract_cards_from_reply(&reply, &jobs);
     let linked_ids: Vec<i64> = ollama_cards.iter().map(|c| c.job_id).collect();
     let latency = started.elapsed().as_millis() as i64;
-    let _ = state.db.log_ai_run("chat", latency, "success_ollama", None, &now);
+    let _ = state.db.log_ai_run(&AiRunLog {
+        task_type: "chat",
+        latency_ms: latency,
+        status: "success_ollama",
+        created_at: &now,
+        intent: Some(intent_str),
+        route: Some("ollama_streaming"),
+        candidate_job_ids: Some(&candidate_ids),
+        final_job_ids: Some(&linked_ids),
+        retrieval_ms: Some(retrieval_ms),
+        llm_ms: Some(llm_ms),
+        ..Default::default()
+    });
     state.db.append_ai_message(
         convo_id, "assistant", &reply,
         &assistant_meta("ollama", None, if ollama_cards.is_empty() { None } else { Some(&ollama_cards) }),

@@ -303,6 +303,13 @@ impl Database {
         conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_period TEXT DEFAULT '';").ok();
         // Migration: add linked job IDs for chat follow-up context.
         conn.execute_batch("ALTER TABLE ai_messages ADD COLUMN linked_job_ids_json TEXT DEFAULT '[]';").ok();
+        // Migration: telemetry breakdown on ai_runs (phase #2).
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN intent TEXT;").ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN route TEXT;").ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN candidate_job_ids TEXT;").ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN final_job_ids TEXT;").ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN retrieval_ms INTEGER;").ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN llm_ms INTEGER;").ok();
 
         // Backfill salary fields for existing rows that have a pay string but no parsed salary.
         {
@@ -959,15 +966,50 @@ impl Database {
         Ok(())
     }
 
-    pub fn log_ai_run(&self, task_type: &str, latency_ms: i64, status: &str, error: Option<&str>, created_at: &str) -> Result<(), rusqlite::Error> {
+    pub fn log_ai_run(&self, log: &AiRunLog) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
+        let candidates_json = log
+            .candidate_job_ids
+            .map(|ids| serde_json::to_string(ids).unwrap_or_else(|_| "[]".to_string()));
+        let finals_json = log
+            .final_job_ids
+            .map(|ids| serde_json::to_string(ids).unwrap_or_else(|_| "[]".to_string()));
         conn.execute(
-            "INSERT INTO ai_runs (task_type, latency_ms, status, error, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![task_type, latency_ms, status, error.unwrap_or(""), created_at],
+            "INSERT INTO ai_runs (task_type, latency_ms, status, error, created_at,
+                                  intent, route, candidate_job_ids, final_job_ids,
+                                  retrieval_ms, llm_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                log.task_type,
+                log.latency_ms,
+                log.status,
+                log.error.unwrap_or(""),
+                log.created_at,
+                log.intent,
+                log.route,
+                candidates_json,
+                finals_json,
+                log.retrieval_ms,
+                log.llm_ms,
+            ],
         )?;
         Ok(())
     }
+}
+
+#[derive(Default)]
+pub struct AiRunLog<'a> {
+    pub task_type: &'a str,
+    pub latency_ms: i64,
+    pub status: &'a str,
+    pub error: Option<&'a str>,
+    pub created_at: &'a str,
+    pub intent: Option<&'a str>,
+    pub route: Option<&'a str>,
+    pub candidate_job_ids: Option<&'a [i64]>,
+    pub final_job_ids: Option<&'a [i64]>,
+    pub retrieval_ms: Option<i64>,
+    pub llm_ms: Option<i64>,
 }
 
 fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
