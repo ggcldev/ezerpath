@@ -94,6 +94,18 @@ pub struct AiChatFilters {
 pub struct AiChatResponse {
     pub conversation_id: i64,
     pub reply: String,
+    pub cards: Option<Vec<AiJobCard>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiJobCard {
+    pub job_id: i64,
+    pub title: String,
+    pub company: String,
+    pub pay: String,
+    pub posted_at: String,
+    pub url: String,
+    pub logo_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,7 +7,7 @@ use ai::ollama::ChatMessage;
 use ai::prompts::system_prompt_for_job_chat;
 use ai::ranking::cosine_similarity;
 use ai::{
-    AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiMessage, AiRuntimeConfig,
+    AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage, AiRuntimeConfig,
     EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult, ResumeProfile,
 };
 use ai::sentence_service::SentenceServiceClient;
@@ -29,7 +29,7 @@ fn extract_top_n(message: &str, default_n: usize) -> usize {
     default_n
 }
 
-fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Option<String> {
+fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -> Option<(String, Vec<AiJobCard>)> {
     let lower = message.to_lowercase();
     let asks_top = lower.contains("top") || lower.contains("best");
     let asks_jobs = lower.contains("job");
@@ -44,29 +44,42 @@ fn try_local_top_jobs_reply(message: &str, all_jobs: &[Job], runs: &[ScanRun]) -
         }
     }
     if scoped.is_empty() {
-        return Some(
+        return Some((
             "I checked your current app data and there are no jobs in this scope yet.\n\
 Try running a new scan or relaxing your filters/keywords.".to_string(),
-        );
+            Vec::new(),
+        ));
     }
 
     scoped.sort_by(|a, b| b.scraped_at.cmp(&a.scraped_at));
     let n = extract_top_n(message, 3);
     let top = scoped.into_iter().take(n).collect::<Vec<_>>();
     let mut lines = vec![format!("Top {} jobs from your app data:", top.len())];
+    let cards = top
+        .iter()
+        .map(|job| AiJobCard {
+            job_id: job.id.unwrap_or_default(),
+            title: job.title.clone(),
+            company: if job.company.is_empty() {
+                "Unknown company".to_string()
+            } else {
+                job.company.clone()
+            },
+            pay: if job.pay.is_empty() { "-".to_string() } else { job.pay.clone() },
+            posted_at: if job.posted_at.is_empty() {
+                "-".to_string()
+            } else {
+                job.posted_at.clone()
+            },
+            url: job.url.clone(),
+            logo_url: job.company_logo_url.clone(),
+        })
+        .collect::<Vec<_>>();
     for (i, job) in top.iter().enumerate() {
-        lines.push(format!(
-            "{}. {} | {} | Pay: {} | Keyword: {} | Posted: {} | {}",
-            i + 1,
-            job.title,
-            if job.company.is_empty() { "Unknown company" } else { &job.company },
-            if job.pay.is_empty() { "-" } else { &job.pay },
-            if job.keyword.is_empty() { "-" } else { &job.keyword },
-            if job.posted_at.is_empty() { "-" } else { &job.posted_at },
-            job.url
-        ));
+        lines.push(format!("{}. {}", i + 1, job.title));
     }
-    Some(lines.join("\n"))
+    lines.push("Open any card below for full details.".to_string());
+    Some((lines.join("\n"), cards))
 }
 
 fn out_of_scope_reply() -> String {
@@ -135,6 +148,48 @@ fn response_violates_app_scope(reply: &str) -> bool {
         "real-time access",
     ];
     bad_phrases.iter().any(|p| lower.contains(p))
+}
+
+fn assistant_meta(provider: &str, scope: Option<&str>, cards: Option<&[AiJobCard]>) -> String {
+    let mut meta = serde_json::Map::new();
+    meta.insert("provider".to_string(), serde_json::Value::String(provider.to_string()));
+    if let Some(scope_val) = scope {
+        meta.insert("scope".to_string(), serde_json::Value::String(scope_val.to_string()));
+    }
+    if let Some(card_rows) = cards {
+        if !card_rows.is_empty() {
+            meta.insert(
+                "cards".to_string(),
+                serde_json::to_value(card_rows).unwrap_or(serde_json::Value::Array(vec![])),
+            );
+        }
+    }
+    serde_json::Value::Object(meta).to_string()
+}
+
+fn compact_reply_text(reply: &str) -> String {
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut prev_blank = false;
+    for raw in reply.lines() {
+        let line = raw.trim_end();
+        if line.trim().is_empty() {
+            if !prev_blank {
+                out_lines.push(String::new());
+            }
+            prev_blank = true;
+        } else {
+            out_lines.push(line.to_string());
+            prev_blank = false;
+        }
+    }
+    let mut compact = out_lines.join("\n").trim().to_string();
+    // Hard cap for readability in chat; keep concise unless user asks for depth.
+    const MAX_LEN: usize = 1800;
+    if compact.len() > MAX_LEN {
+        compact.truncate(MAX_LEN);
+        compact.push_str("\n\n(Truncated for readability.)");
+    }
+    compact
 }
 
 struct AppState {
@@ -419,11 +474,18 @@ async fn ai_chat(
         let _ = state.db.log_ai_run("chat", latency, "blocked_injection", Some("prompt_injection_detected"), &now);
         state
             .db
-            .append_ai_message(convo_id, "assistant", &reply, "{\"provider\":\"local\",\"scope\":\"blocked_injection\"}", &now)
+            .append_ai_message(
+                convo_id,
+                "assistant",
+                &reply,
+                &assistant_meta("local", Some("blocked_injection"), None),
+                &now,
+            )
             .map_err(|e| e.to_string())?;
         return Ok(AiChatResponse {
             conversation_id: convo_id,
             reply,
+            cards: None,
         });
     }
 
@@ -433,11 +495,18 @@ async fn ai_chat(
         let _ = state.db.log_ai_run("chat", latency, "blocked_scope", Some("out_of_scope_query"), &now);
         state
             .db
-            .append_ai_message(convo_id, "assistant", &reply, "{\"provider\":\"local\",\"scope\":\"blocked\"}", &now)
+            .append_ai_message(
+                convo_id,
+                "assistant",
+                &reply,
+                &assistant_meta("local", Some("blocked"), None),
+                &now,
+            )
             .map_err(|e| e.to_string())?;
         return Ok(AiChatResponse {
             conversation_id: convo_id,
             reply,
+            cards: None,
         });
     }
 
@@ -459,16 +528,23 @@ async fn ai_chat(
         .map_err(|e| e.to_string())?;
 
     let runs = state.db.get_runs().map_err(|e| e.to_string())?;
-    if let Some(local_reply) = try_local_top_jobs_reply(&message, &jobs, &runs) {
+    if let Some((local_reply, cards)) = try_local_top_jobs_reply(&message, &jobs, &runs) {
         let latency = started.elapsed().as_millis() as i64;
         let _ = state.db.log_ai_run("chat", latency, "success_local", None, &now);
         state
             .db
-            .append_ai_message(convo_id, "assistant", &local_reply, "{\"provider\":\"local\"}", &now)
+            .append_ai_message(
+                convo_id,
+                "assistant",
+                &local_reply,
+                &assistant_meta("local", None, Some(&cards)),
+                &now,
+            )
             .map_err(|e| e.to_string())?;
         return Ok(AiChatResponse {
             conversation_id: convo_id,
             reply: local_reply,
+            cards: if cards.is_empty() { None } else { Some(cards) },
         });
     }
 
@@ -494,7 +570,7 @@ async fn ai_chat(
     let mut ollama_messages: Vec<ChatMessage> = vec![ChatMessage {
         role: "system".to_string(),
         content: format!(
-            "{}\n\nRules:\n- Only use local job context below.\n- If the answer is uncertain or missing, say what is missing.\n- Recommend specific next scan keywords when needed.\n\nLocal job context ({} rows):\n{}",
+            "{}\n\nRules:\n- Only use local job context below.\n- If the answer is uncertain or missing, say what is missing.\n- Recommend specific next scan keywords when needed.\n- Keep outputs concise, direct, and well-formatted.\n- Use bullets/numbered list for multiple items; avoid long paragraphs.\n- No fluff, no generic disclaimers.\n\nLocal job context ({} rows):\n{}",
             system_prompt_for_job_chat(),
             jobs.len(),
             if job_context.is_empty() { "No jobs available in current filter scope.".to_string() } else { job_context }
@@ -521,16 +597,24 @@ async fn ai_chat(
     if response_violates_app_scope(&reply) {
         reply = out_of_scope_reply();
     }
+    reply = compact_reply_text(&reply);
     let latency = started.elapsed().as_millis() as i64;
     let _ = state.db.log_ai_run("chat", latency, "success_ollama", None, &now);
     state
         .db
-        .append_ai_message(convo_id, "assistant", &reply, "{\"provider\":\"ollama\"}", &now)
+        .append_ai_message(
+            convo_id,
+            "assistant",
+            &reply,
+            &assistant_meta("ollama", None, None),
+            &now,
+        )
         .map_err(|e| e.to_string())?;
 
     Ok(AiChatResponse {
         conversation_id: convo_id,
         reply,
+        cards: None,
     })
 }
 
