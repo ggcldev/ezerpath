@@ -25,7 +25,7 @@ impl Default for AiRuntimeConfig {
             embedding_model: "all-MiniLM-L6-v2".to_string(),
             temperature: 0.2,
             max_tokens: 1024,
-            timeout_ms: 30_000,
+            timeout_ms: 120_000,
         }
     }
 }

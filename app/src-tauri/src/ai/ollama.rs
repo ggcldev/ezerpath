@@ -40,12 +40,18 @@ struct OllamaChatOptions {
 }
 
 #[derive(Debug, Deserialize)]
-struct OllamaChatResponse {
-    message: OllamaMessage,
+struct OllamaChatStreamChunk {
+    #[serde(default)]
+    message: Option<OllamaMessage>,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct OllamaMessage {
+    #[serde(default)]
     content: String,
 }
 
@@ -116,27 +122,81 @@ impl OllamaClient {
         let url = format!("{base}/api/chat");
         let req = OllamaChatRequest {
             model: cfg.ollama_model.clone(),
-            stream: false,
+            stream: true,
             messages,
             options: OllamaChatOptions {
                 temperature: cfg.temperature,
                 num_predict: cfg.max_tokens,
             },
         };
-        let resp = timeout(
+
+        // The initial connect timeout is bounded by cfg.timeout_ms — Ollama
+        // returns headers immediately for streaming requests, so this only
+        // catches truly unreachable servers, not slow generations.
+        let mut resp = timeout(
             Duration::from_millis(cfg.timeout_ms),
             self.client.post(url).json(&req).send(),
         )
         .await
-        .map_err(|_| format!("Ollama chat timed out after {}ms", cfg.timeout_ms))?
+        .map_err(|_| format!("Ollama chat connect timed out after {}ms", cfg.timeout_ms))?
         .map_err(|e| e.to_string())?;
+
         if !resp.status().is_success() {
             return Err(format!("Ollama chat failed: HTTP {}", resp.status()));
         }
-        let payload: OllamaChatResponse = timeout(Duration::from_millis(cfg.timeout_ms), resp.json())
-            .await
-            .map_err(|_| format!("Ollama chat response parse timed out after {}ms", cfg.timeout_ms))?
-            .map_err(|e| e.to_string())?;
-        Ok(payload.message.content)
+
+        // Stream NDJSON chunks. The timeout below is an *idle-gap* budget:
+        // we only error if Ollama goes silent for cfg.timeout_ms between
+        // tokens. Total generation time is unbounded, so cold model loads
+        // and long completions no longer trip a wall-clock limit.
+        let idle = Duration::from_millis(cfg.timeout_ms);
+        let mut accumulated = String::new();
+        let mut buf: Vec<u8> = Vec::new();
+
+        loop {
+            let chunk = timeout(idle, resp.chunk())
+                .await
+                .map_err(|_| format!("Ollama chat idle for {}ms (no tokens received)", cfg.timeout_ms))?
+                .map_err(|e| e.to_string())?;
+
+            let Some(bytes) = chunk else { break };
+            buf.extend_from_slice(&bytes);
+
+            // Parse complete NDJSON lines from the buffer.
+            while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                let line = buf.drain(..=nl).collect::<Vec<u8>>();
+                let line = &line[..line.len() - 1]; // strip \n
+                if line.is_empty() {
+                    continue;
+                }
+                let parsed: OllamaChatStreamChunk = serde_json::from_slice(line)
+                    .map_err(|e| format!("Ollama chat parse error: {e}"))?;
+                if let Some(err) = parsed.error {
+                    return Err(format!("Ollama chat error: {err}"));
+                }
+                if let Some(msg) = parsed.message {
+                    accumulated.push_str(&msg.content);
+                }
+                if parsed.done {
+                    return Ok(accumulated);
+                }
+            }
+        }
+
+        // Stream ended without a done=true marker. Try to parse any trailing
+        // line in the buffer; otherwise return whatever we accumulated.
+        let trailing = buf.iter().position(|&b| b == b'\n').map_or(buf.as_slice(), |i| &buf[..i]);
+        if !trailing.is_empty() {
+            if let Ok(parsed) = serde_json::from_slice::<OllamaChatStreamChunk>(trailing) {
+                if let Some(msg) = parsed.message {
+                    accumulated.push_str(&msg.content);
+                }
+            }
+        }
+        if accumulated.is_empty() {
+            Err("Ollama chat stream ended with no content".to_string())
+        } else {
+            Ok(accumulated)
+        }
     }
 }
