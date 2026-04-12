@@ -31,6 +31,8 @@ struct OllamaChatRequest {
     stream: bool,
     messages: Vec<ChatMessage>,
     options: OllamaChatOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,6 +117,33 @@ impl OllamaClient {
     }
 
     pub async fn chat(&self, cfg: &AiRuntimeConfig, messages: Vec<ChatMessage>) -> Result<String, String> {
+        self.chat_inner(cfg, messages, None, None).await
+    }
+
+    /// Constrained-output variant: passes a JSON schema in Ollama's `format`
+    /// field, forces temperature to 0, and deserializes the accumulated
+    /// stream into `T`. Returns an error (with raw payload prefix) when the
+    /// model emits malformed JSON so callers can fall back to free-form chat.
+    pub async fn chat_json<T: serde::de::DeserializeOwned>(
+        &self,
+        cfg: &AiRuntimeConfig,
+        messages: Vec<ChatMessage>,
+        schema: serde_json::Value,
+    ) -> Result<T, String> {
+        let raw = self.chat_inner(cfg, messages, Some(schema), Some(0.0)).await?;
+        serde_json::from_str::<T>(&raw).map_err(|e| {
+            let preview: String = raw.chars().take(200).collect();
+            format!("Ollama JSON parse error: {e}; raw: {preview}")
+        })
+    }
+
+    async fn chat_inner(
+        &self,
+        cfg: &AiRuntimeConfig,
+        messages: Vec<ChatMessage>,
+        format: Option<serde_json::Value>,
+        temperature_override: Option<f32>,
+    ) -> Result<String, String> {
         if messages.is_empty() {
             return Err("No messages provided to Ollama chat".to_string());
         }
@@ -125,9 +154,10 @@ impl OllamaClient {
             stream: true,
             messages,
             options: OllamaChatOptions {
-                temperature: cfg.temperature,
+                temperature: temperature_override.unwrap_or(cfg.temperature),
                 num_predict: cfg.max_tokens,
             },
+            format,
         };
 
         // The initial connect timeout is bounded by cfg.timeout_ms — Ollama

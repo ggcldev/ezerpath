@@ -102,7 +102,7 @@ Living checklist for the upgrades agreed on after the GPT-5 architecture review.
 
 ---
 
-## #4 — JSON-schema outputs for Ranking / Describe / FollowUp ☐
+## #4 — JSON-schema outputs for Ranking / Describe / FollowUp ✅
 
 **Why fourth:** the structured paths already produce cards. Forcing Ollama JSON mode for them eliminates parser fragility, makes follow-ups deterministic (job_ids come from the LLM, not regex over prose), and produces stable shapes the frontend can render confidently. **Skip the General path** — schema-constraining free-form chat degrades quality.
 

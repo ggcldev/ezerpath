@@ -29,3 +29,80 @@ pub fn system_prompt_for_matching() -> &'static str {
 pub fn system_prompt_for_summaries() -> &'static str {
     "Summarize job posts clearly: responsibilities, requirements, compensation, risks."
 }
+
+// ── JSON-mode schemas (phase #4) ───────────────────────────────────────────
+//
+// Each schema below pairs with a Rust struct in lib.rs. They are passed to
+// Ollama via the `format` field on /api/chat to force structured output.
+// Keep field names in sync with the matching `#[derive(Deserialize)]` types.
+
+pub fn top_jobs_response_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["answer_type", "jobs"],
+        "properties": {
+            "answer_type": { "type": "string", "enum": ["top_jobs"] },
+            "jobs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["job_id", "title", "company", "pay_text", "summary"],
+                    "properties": {
+                        "job_id":  { "type": "integer" },
+                        "title":   { "type": "string" },
+                        "company": { "type": "string" },
+                        "pay_text":{ "type": "string" },
+                        "summary": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+pub fn job_descriptions_response_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["answer_type", "jobs"],
+        "properties": {
+            "answer_type": { "type": "string", "enum": ["job_descriptions"] },
+            "jobs": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["job_id", "description"],
+                    "properties": {
+                        "job_id":      { "type": "integer" },
+                        "description": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
+}
+
+pub fn followup_resolution_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["answer_type", "target_job_ids", "explanation"],
+        "properties": {
+            "answer_type":    { "type": "string", "enum": ["followup_resolution"] },
+            "target_job_ids": { "type": "array", "items": { "type": "integer" } },
+            "explanation":    { "type": "string" }
+        }
+    })
+}
+
+/// System prompt addendum for JSON-mode calls. Tells the model the exact
+/// shape it must return, and which job IDs it is allowed to reference.
+pub fn json_mode_system_suffix(allowed_job_ids: &[i64]) -> String {
+    let ids: Vec<String> = allowed_job_ids.iter().map(|i| i.to_string()).collect();
+    format!(
+        "\n\nYou must respond with a single JSON object that matches the schema \
+        provided in the request `format` field. Do not include any prose outside \
+        the JSON. When referencing jobs, use only these job_id values from the \
+        local context: [{}]. Use the exact title, company, and pay_text strings \
+        as they appear in context.",
+        ids.join(", ")
+    )
+}
