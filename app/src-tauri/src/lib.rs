@@ -1099,16 +1099,48 @@ async fn ai_chat(
         Err(err) => {
             let latency = started.elapsed().as_millis() as i64;
             let _ = state.db.log_ai_run("chat", latency, "failed", Some(&err), &now);
-            let fallback = format!(
-                "I can’t reach your local Ollama server right now.\n\
-Please start/restart Ollama, then try again.\n\n\
+            let err_lower = err.to_lowercase();
+            let fallback = if err_lower.contains("timed out") || err_lower.contains("error sending request") {
+                format!(
+                    "Ollama request timed out before completion.\n\
+The server is likely reachable, but the response took longer than your timeout.\n\n\
+Current timeout: {}ms\n\n\
+Quick checks:\n\
+1. In Settings > AI Runtime, increase Timeout (ms) to 60000-120000\n\
+2. Reduce Max Tokens to 256-512 for faster responses\n\
+3. Keep Ollama URL as `{}`\n\
+4. Retry your prompt\n\n\
+Technical detail: {}",
+                    cfg.timeout_ms,
+                    cfg.ollama_base_url,
+                    err
+                )
+            } else if err_lower.contains("http 404") || err_lower.contains("model") {
+                format!(
+                    "Ollama is reachable but the selected model appears unavailable.\n\n\
+Selected model: {}\n\n\
+Quick checks:\n\
+1. Run `ollama list`\n\
+2. Pull/select an installed model\n\
+3. Retry your prompt\n\n\
+Technical detail: {}",
+                    cfg.ollama_model,
+                    err
+                )
+            } else {
+                format!(
+                    "I can’t complete the Ollama request right now.\n\
+Please verify local Ollama and retry.\n\n\
 Quick checks:\n\
 1. Run `ollama serve`\n\
 2. Keep Ollama URL as `{}`\n\
 3. Ensure your selected model is installed (`ollama list`)\n\
-4. Retry your prompt",
-                cfg.ollama_base_url
-            );
+4. Retry your prompt\n\n\
+Technical detail: {}",
+                    cfg.ollama_base_url,
+                    err
+                )
+            };
             state.db.append_ai_message(
                 convo_id, "assistant", &fallback,
                 &assistant_meta("local", Some("ollama_unreachable"), None),

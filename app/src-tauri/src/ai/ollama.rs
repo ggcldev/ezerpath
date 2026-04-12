@@ -50,9 +50,8 @@ struct OllamaMessage {
 }
 
 impl OllamaClient {
-    pub fn new(timeout_ms: u64) -> Result<Self, reqwest::Error> {
+    pub fn new(_timeout_ms: u64) -> Result<Self, reqwest::Error> {
         let client = Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
             .build()?;
         Ok(Self { client })
     }
