@@ -351,12 +351,20 @@ impl Database {
                 VALUES (new.id, new.title, new.company, new.summary);
             END;",
         );
-        // If the table was just created (or is empty), backfill from jobs.
+        // Backfill from jobs if the FTS table was just created or is empty,
+        // and rebuild whenever the FTS5 index fails its own integrity check.
+        // Without this, a corrupt FTS5 shadow index causes any subsequent
+        // UPDATE on `jobs` (e.g. the salary backfill below) to fail with
+        // "database disk image is malformed" via the jobs_au trigger,
+        // which prevents the app from starting.
         if fts_create.is_ok() {
             let count: i64 = conn
                 .query_row("SELECT count(*) FROM jobs_fts", [], |r| r.get(0))
                 .unwrap_or(0);
-            if count == 0 {
+            let fts_ok = conn
+                .execute_batch("INSERT INTO jobs_fts(jobs_fts) VALUES('integrity-check');")
+                .is_ok();
+            if count == 0 || !fts_ok {
                 conn.execute_batch("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild');").ok();
             }
         }
