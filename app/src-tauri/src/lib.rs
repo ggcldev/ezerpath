@@ -9,7 +9,7 @@ use ai::prompts::{
     system_prompt_for_job_chat, top_jobs_response_schema,
 };
 use serde::Deserialize;
-use ai::ranking::cosine_similarity;
+use ai::ranking::{cosine_similarity, rank_embeddings_against_query};
 use ai::{
     AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage, AiRuntimeConfig,
     EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult, ResumeProfile,
@@ -449,6 +449,53 @@ fn try_search_keyword(lower: &str) -> Option<String> {
         return None;
     }
     Some(useful.join(" "))
+}
+
+/// Minimum number of FTS hits before we consider the keyword search "enough".
+/// Below this, we fall through to a semantic-similarity pass using cached job
+/// embeddings to pick up conceptually-related postings the tokenizer missed.
+const SEARCH_KEYWORD_FTS_MIN_HITS: usize = 3;
+
+/// Discard semantic matches whose cosine similarity falls below this floor.
+/// Cosine on the sentence-transformer models we use produces roughly [-0.1, 1.0]
+/// for job text; 0.30 empirically separates "related" from "unrelated noise".
+const SEMANTIC_FALLBACK_SIM_FLOOR: f32 = 0.30;
+
+async fn semantic_search_fallback(
+    state: &AppState,
+    cfg: &AiRuntimeConfig,
+    query: &str,
+    exclude: &std::collections::HashSet<i64>,
+    limit: usize,
+) -> Result<Vec<Job>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let rows = state
+        .db
+        .list_job_embeddings(&cfg.embedding_model)
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut vectors = state
+        .sentence_service
+        .embed_texts(cfg, vec![query.to_string()])
+        .await?;
+    let query_vec = vectors.pop().ok_or_else(|| "empty query embedding".to_string())?;
+
+    let candidates = rows.into_iter().filter_map(|row| {
+        let job_vec: Vec<f32> = serde_json::from_str(&row.vector_json).ok()?;
+        Some((row.job_id, job_vec))
+    });
+    let ids = rank_embeddings_against_query(
+        &query_vec,
+        candidates,
+        exclude,
+        SEMANTIC_FALLBACK_SIM_FLOOR,
+        limit,
+    );
+    state.db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())
 }
 
 fn format_search_keyword_reply(query: &str, jobs: &[Job]) -> String {
@@ -1493,7 +1540,26 @@ async fn ai_chat(
         }
 
         ChatIntent::SearchKeyword { ref query } => {
-            let results = state.db.search_jobs_fts(query, 10).map_err(|e| e.to_string())?;
+            let fts_results = state.db.search_jobs_fts(query, 10).map_err(|e| e.to_string())?;
+            let fts_ids: std::collections::HashSet<i64> =
+                fts_results.iter().filter_map(|j| j.id).collect();
+
+            let (results, route_name) = if fts_results.len() >= SEARCH_KEYWORD_FTS_MIN_HITS {
+                (fts_results, "search_keyword_fts")
+            } else {
+                // Best-effort: if the embedding service is down or no vectors are
+                // cached, fall back silently to the FTS hits we already have.
+                let want = 10usize.saturating_sub(fts_results.len());
+                match semantic_search_fallback(state.inner(), &cfg, query, &fts_ids, want).await {
+                    Ok(extra) if !extra.is_empty() => {
+                        let mut merged = fts_results;
+                        merged.extend(extra);
+                        (merged, "search_keyword_fts_semantic")
+                    }
+                    _ => (fts_results, "search_keyword_fts"),
+                }
+            };
+
             if !results.is_empty() {
                 let reply = format_search_keyword_reply(query, &results);
                 let cards = jobs_to_cards(&results);
@@ -1507,7 +1573,7 @@ async fn ai_chat(
                     status: "success_search",
                     created_at: &now,
                     intent: Some(intent_str),
-                    route: Some("search_keyword_fts"),
+                    route: Some(route_name),
                     candidate_job_ids: Some(&candidate_ids),
                     final_job_ids: Some(&linked_ids),
                     retrieval_ms: Some(retrieval_ms),
