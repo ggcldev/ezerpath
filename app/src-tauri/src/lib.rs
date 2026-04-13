@@ -1274,13 +1274,27 @@ async fn ai_chat(
                 let candidate_ids: Vec<i64> = top.iter().filter_map(|j| j.id).collect();
                 let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
                 let latency = started.elapsed().as_millis() as i64;
+                // Ranking ran, but if none of the rows had extractable pay the
+                // order is effectively recency, not salary. Flag it so the UI
+                // can show a "partial data" badge and the eval can track the
+                // degraded-answer rate.
+                let degraded_pay = !has_pay_scores;
+                let error_code: Option<&str> = if degraded_pay { Some("INSUFFICIENT_DATA") } else { None };
+                let chat_error = if degraded_pay {
+                    Some(AiChatError {
+                        code: "INSUFFICIENT_DATA".to_string(),
+                        message: "Ranking by pay not possible — none of the returned jobs had a parseable salary. Ordered by recency instead.".to_string(),
+                    })
+                } else {
+                    None
+                };
                 let _ = state.db.log_ai_run(&AiRunLog {
                     task_type: "chat",
                     latency_ms: latency,
-                    status: "success_local",
+                    status: if degraded_pay { "partial_local" } else { "success_local" },
                     created_at: &now,
                     intent: Some(intent_str),
-                    route: Some("local_ranking"),
+                    route: Some(if degraded_pay { "local_ranking_no_pay" } else { "local_ranking" }),
                     candidate_job_ids: Some(&candidate_ids),
                     final_job_ids: Some(&linked_ids),
                     retrieval_ms: Some(retrieval_ms),
@@ -1288,10 +1302,10 @@ async fn ai_chat(
                 });
                 state.db.append_ai_message(
                     convo_id, "assistant", &reply,
-                    &assistant_meta("local", None, Some(&cards)),
+                    &assistant_meta_full("local", None, Some(&cards), error_code),
                     &linked_ids, &now,
                 ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: chat_error });
             }
 
             // JSON-mode ranking: SQL/local found nothing usable. Hand the
@@ -1360,9 +1374,77 @@ async fn ai_chat(
         ChatIntent::FollowUp => {
             // Use linked job IDs from previous assistant message
             let prev_ids = get_linked_job_ids(&recent);
-            if !prev_ids.is_empty() {
+            if prev_ids.is_empty() {
+                // No prior linked jobs → the reference words ("those", "each
+                // of them", etc.) have nothing to resolve against. Short-circuit
+                // with a structured ambiguity error instead of burning an LLM
+                // call on a hallucinated answer.
+                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+                let latency = started.elapsed().as_millis() as i64;
+                let reply = "I'm not sure which jobs you're referring to. Try searching or asking for a top list first, then I can describe or compare them."
+                    .to_string();
+                let _ = state.db.log_ai_run(&AiRunLog {
+                    task_type: "chat",
+                    latency_ms: latency,
+                    status: "ambiguous_reference",
+                    created_at: &now,
+                    intent: Some(intent_str),
+                    route: Some("followup_ambiguous"),
+                    retrieval_ms: Some(retrieval_ms),
+                    ..Default::default()
+                });
+                state.db.append_ai_message(
+                    convo_id, "assistant", &reply,
+                    &assistant_meta_full("local", None, None, Some("AMBIGUOUS_REFERENCE")),
+                    &[], &now,
+                ).map_err(|e| e.to_string())?;
+                return Ok(AiChatResponse {
+                    conversation_id: convo_id,
+                    reply,
+                    cards: None,
+                    error: Some(AiChatError {
+                        code: "AMBIGUOUS_REFERENCE".to_string(),
+                        message: "No prior jobs linked in this conversation.".to_string(),
+                    }),
+                });
+            }
+            {
                 let linked_jobs = state.db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
-                if !linked_jobs.is_empty() {
+                if linked_jobs.is_empty() {
+                    // IDs exist in the transcript but the rows are gone (e.g.,
+                    // the scan was purged). Report it instead of silently
+                    // falling through — the user should know their referents
+                    // are no longer retrievable.
+                    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+                    let latency = started.elapsed().as_millis() as i64;
+                    let reply = "The jobs from the earlier message are no longer available — they may have been removed by a later scan.".to_string();
+                    let _ = state.db.log_ai_run(&AiRunLog {
+                        task_type: "chat",
+                        latency_ms: latency,
+                        status: "missing_linked_results",
+                        created_at: &now,
+                        intent: Some(intent_str),
+                        route: Some("followup_missing_linked"),
+                        candidate_job_ids: Some(&prev_ids),
+                        retrieval_ms: Some(retrieval_ms),
+                        ..Default::default()
+                    });
+                    state.db.append_ai_message(
+                        convo_id, "assistant", &reply,
+                        &assistant_meta_full("local", None, None, Some("MISSING_LINKED_RESULTS")),
+                        &[], &now,
+                    ).map_err(|e| e.to_string())?;
+                    return Ok(AiChatResponse {
+                        conversation_id: convo_id,
+                        reply,
+                        cards: None,
+                        error: Some(AiChatError {
+                            code: "MISSING_LINKED_RESULTS".to_string(),
+                            message: "Linked job rows no longer exist.".to_string(),
+                        }),
+                    });
+                }
+                {
                     // Build focused context for Ollama with only the linked jobs
                     let system = build_ollama_system_prompt(&linked_jobs);
                     let mut msgs: Vec<ChatMessage> = vec![ChatMessage { role: "system".to_string(), content: system }];
@@ -1716,10 +1798,18 @@ Technical detail: {}",
             };
             state.db.append_ai_message(
                 convo_id, "assistant", &fallback,
-                &assistant_meta("local", Some("ollama_unreachable"), None),
+                &assistant_meta_full("local", Some("ollama_unreachable"), None, Some("MODEL_ERROR")),
                 &[], &now,
             ).map_err(|e| e.to_string())?;
-            return Ok(AiChatResponse { conversation_id: convo_id, reply: fallback, cards: None, error: None });
+            return Ok(AiChatResponse {
+                conversation_id: convo_id,
+                reply: fallback,
+                cards: None,
+                error: Some(AiChatError {
+                    code: "MODEL_ERROR".to_string(),
+                    message: err,
+                }),
+            });
         }
     };
     if response_violates_app_scope(&reply) {
