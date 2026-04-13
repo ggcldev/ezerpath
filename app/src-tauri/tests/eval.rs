@@ -9,6 +9,7 @@
 // point for fixing it.
 
 use chrono::Utc;
+use ezerpath_lib::ai::ranking::rank_embeddings_against_query;
 use ezerpath_lib::db::{build_fts5_query, Database, Job};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -159,4 +160,119 @@ fn golden_queries_meet_recall_threshold() {
         "average recall@{} = {:.2} (threshold {:.2}). Per-query failures: {:?}",
         RECALL_K, avg, RECALL_THRESHOLD, failures
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Semantic fallback eval
+//
+// The SearchKeyword route falls through to cosine similarity over cached
+// job embeddings when FTS5 returns too few hits. That path is partly HTTP
+// (sentence_service.embed_texts) and partly pure ranking
+// (rank_embeddings_against_query + DB storage). The HTTP hop is awkward to
+// exercise in-process, so this test pins down the deterministic half:
+//
+//   1. Seed a tiny DB with real rows.
+//   2. Upsert hand-crafted vectors into job_embeddings.
+//   3. For each query, pass a hand-crafted query vector through
+//      list_job_embeddings → rank_embeddings_against_query.
+//   4. Assert the top-ranked job matches the expected source_id.
+//
+// The vectors are 4-dim semantic-axis stand-ins. Each job gets weight on
+// the axes it conceptually belongs to; queries are vectors along a single
+// axis and should pull in the jobs with the highest weight on that axis.
+// Axes: [0]=seo/marketing, [1]=dev/code, [2]=finance, [3]=design.
+// ─────────────────────────────────────────────────────────────────────────
+
+const SEMANTIC_MODEL: &str = "eval-synthetic";
+
+fn seed_semantic_corpus(db: &Database) -> HashMap<String, i64> {
+    let now = Utc::now().to_rfc3339();
+    let run_id = db.insert_run("eval_semantic", &now).expect("insert run");
+
+    // (source_id, title, summary, vector)
+    let rows: Vec<(&str, &str, &str, [f32; 4])> = vec![
+        ("sem-seo-1",   "Senior SEO Strategist",    "Keyword research and on-page optimization.", [1.0, 0.1, 0.0, 0.0]),
+        ("sem-dev-1",   "Rust Backend Engineer",    "Ship async services with Postgres.",         [0.0, 1.0, 0.1, 0.0]),
+        ("sem-bk-1",    "Bookkeeper",               "Quickbooks reconciliation for SMBs.",        [0.0, 0.0, 1.0, 0.0]),
+        ("sem-des-1",   "Product Designer",         "Figma prototypes and user testing.",         [0.0, 0.0, 0.0, 1.0]),
+        ("sem-hybrid-1","Marketing Engineer",       "Growth ops: SEO analytics + internal tools.", [0.7, 0.6, 0.0, 0.0]),
+    ];
+
+    let mut map = HashMap::new();
+    for (sid, title, summary, _vec) in &rows {
+        let job = Job {
+            id: None,
+            source: "eval_semantic".to_string(),
+            source_id: sid.to_string(),
+            title: title.to_string(),
+            company: "SemCo".to_string(),
+            company_logo_url: String::new(),
+            pay: "$1000/mo".to_string(),
+            posted_at: now.clone(),
+            url: format!("https://example.com/{sid}"),
+            summary: summary.to_string(),
+            keyword: String::new(),
+            scraped_at: now.clone(),
+            is_new: true,
+            watchlisted: false,
+            run_id: None,
+            salary_min: None,
+            salary_max: None,
+            salary_currency: String::new(),
+            salary_period: String::new(),
+        };
+        db.insert_job(&job, run_id).expect("insert semantic job");
+    }
+
+    for j in db.get_jobs(None, false, None).expect("get_jobs") {
+        if let Some(id) = j.id {
+            map.insert(j.source_id.clone(), id);
+        }
+    }
+
+    for (sid, _, _, vec) in &rows {
+        let job_id = *map.get(*sid).expect("mapped id");
+        let vector_json = serde_json::to_string(&vec.to_vec()).expect("vec json");
+        db.upsert_job_embedding(job_id, SEMANTIC_MODEL, &vector_json, &now)
+            .expect("upsert embedding");
+    }
+
+    map
+}
+
+#[test]
+fn semantic_fallback_ranks_by_cosine_similarity() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db = Database::new(tmp.path().to_path_buf()).expect("db");
+    let src_to_id = seed_semantic_corpus(&db);
+
+    // (label, query_vector, expected_top_source_id)
+    let queries: Vec<(&str, [f32; 4], &str)> = vec![
+        ("marketing concepts", [1.0, 0.0, 0.0, 0.0], "sem-seo-1"),
+        ("engineering concepts", [0.0, 1.0, 0.0, 0.0], "sem-dev-1"),
+        ("finance concepts", [0.0, 0.0, 1.0, 0.0], "sem-bk-1"),
+    ];
+
+    let rows = db
+        .list_job_embeddings(SEMANTIC_MODEL)
+        .expect("list embeddings");
+    assert_eq!(rows.len(), 5, "expected 5 seeded embeddings");
+
+    println!("\n=== Semantic Fallback Eval ({} queries) ===", queries.len());
+    for (label, qvec, expected_sid) in &queries {
+        let candidates = rows.iter().filter_map(|r| {
+            let vec: Vec<f32> = serde_json::from_str(&r.vector_json).ok()?;
+            Some((r.job_id, vec))
+        });
+        let ranked = rank_embeddings_against_query(qvec, candidates, &HashSet::new(), 0.30, 5);
+        let top = ranked.first().copied().unwrap_or(-1);
+        let expected_id = *src_to_id.get(*expected_sid).expect("expected sid mapped");
+        let mark = if top == expected_id { "✓" } else { "✗" };
+        println!("  {} {:<22} top={:<4}  expected={}", mark, label, top, expected_id);
+        assert_eq!(
+            top, expected_id,
+            "query '{label}' expected top source_id '{expected_sid}' (id={expected_id}), got id={top}"
+        );
+    }
+    println!("===========================================\n");
 }
