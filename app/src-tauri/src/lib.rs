@@ -685,6 +685,15 @@ Local job context ({} jobs):\n{}",
 }
 
 fn assistant_meta(provider: &str, scope: Option<&str>, cards: Option<&[AiJobCard]>) -> String {
+    assistant_meta_full(provider, scope, cards, None)
+}
+
+fn assistant_meta_full(
+    provider: &str,
+    scope: Option<&str>,
+    cards: Option<&[AiJobCard]>,
+    error_code: Option<&str>,
+) -> String {
     let mut meta = serde_json::Map::new();
     meta.insert("provider".to_string(), serde_json::Value::String(provider.to_string()));
     if let Some(scope_val) = scope {
@@ -697,6 +706,9 @@ fn assistant_meta(provider: &str, scope: Option<&str>, cards: Option<&[AiJobCard
                 serde_json::to_value(card_rows).unwrap_or(serde_json::Value::Array(vec![])),
             );
         }
+    }
+    if let Some(code) = error_code {
+        meta.insert("error_code".to_string(), serde_json::Value::String(code.to_string()));
     }
     serde_json::Value::Object(meta).to_string()
 }
@@ -1606,7 +1618,7 @@ async fn ai_chat(
             });
             state.db.append_ai_message(
                 convo_id, "assistant", &reply,
-                &assistant_meta("sql", None, None),
+                &assistant_meta_full("sql", None, None, Some("NO_MATCHES")),
                 &[], &now,
             ).map_err(|e| e.to_string())?;
             return Ok(AiChatResponse {

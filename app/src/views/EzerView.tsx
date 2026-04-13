@@ -37,6 +37,24 @@ interface AiMessageMeta {
   provider?: string;
   scope?: string;
   cards?: AiJobCard[];
+  error_code?: string;
+}
+
+function errorBadgeLabel(code: string): string {
+  switch (code) {
+    case "NO_MATCHES":
+      return "No matches";
+    case "INSUFFICIENT_DATA":
+      return "Partial data";
+    case "AMBIGUOUS_REFERENCE":
+      return "Unclear reference";
+    case "MISSING_LINKED_RESULTS":
+      return "Referenced jobs unavailable";
+    case "MODEL_ERROR":
+      return "Model error";
+    default:
+      return code;
+  }
 }
 
 interface AiChatError {
@@ -494,6 +512,18 @@ export default function EzerView() {
                             </button>
                           )}
                         </For>
+                      </div>
+                    </Show>
+                    <Show
+                      when={
+                        m.role === "assistant" &&
+                        parseMeta(m.meta_json).error_code &&
+                        !(typingMessageId() === m.id && !typingDone())
+                      }
+                    >
+                      <div class="mt-2 inline-flex items-center gap-1.5 rounded-full border border-mk-separator bg-mk-grouped-bg/60 px-2 py-0.5 text-[11px] text-mk-tertiary">
+                        <span class="w-1.5 h-1.5 rounded-full bg-mk-tertiary" />
+                        <span>{errorBadgeLabel(parseMeta(m.meta_json).error_code!)}</span>
                       </div>
                     </Show>
                   </div>
