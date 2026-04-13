@@ -39,10 +39,16 @@ interface AiMessageMeta {
   cards?: AiJobCard[];
 }
 
+interface AiChatError {
+  code: string;
+  message: string;
+}
+
 interface AiChatResponse {
   conversation_id: number;
   reply: string;
   cards?: AiJobCard[] | null;
+  error?: AiChatError | null;
 }
 
 interface ConfirmDialogState {

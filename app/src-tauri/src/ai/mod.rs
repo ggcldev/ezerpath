@@ -91,11 +91,30 @@ pub struct AiChatFilters {
     pub days_ago: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiChatResponse {
     pub conversation_id: i64,
     pub reply: String,
     pub cards: Option<Vec<AiJobCard>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<AiChatError>,
+}
+
+/// Machine-readable soft-error envelope on AiChatResponse. The reply field
+/// still contains a human-readable message; this lets the frontend pick a
+/// state-specific UI (empty illustration, disambiguation prompt, etc.) and
+/// lets the eval harness assert on categorical failures rather than prose.
+///
+/// Codes (kept as strings so new variants don't require frontend lockstep):
+///   NO_MATCHES           — retrieval produced zero results
+///   INSUFFICIENT_DATA    — partial data; e.g., ranking missing pay fields
+///   AMBIGUOUS_REFERENCE  — follow-up couldn't resolve "them"/"those"
+///   MISSING_LINKED_RESULTS — follow-up found IDs but the rows are gone
+///   MODEL_ERROR          — LLM call failed after fallbacks
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiChatError {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

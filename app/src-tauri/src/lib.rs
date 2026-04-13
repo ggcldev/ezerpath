@@ -11,7 +11,8 @@ use ai::prompts::{
 use serde::Deserialize;
 use ai::ranking::{cosine_similarity, rank_embeddings_against_query};
 use ai::{
-    AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage, AiRuntimeConfig,
+    AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage,
+    AiRuntimeConfig,
     EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult, ResumeProfile,
 };
 use ai::sentence_service::SentenceServiceClient;
@@ -1153,8 +1154,7 @@ async fn ai_chat(
         return Ok(AiChatResponse {
             conversation_id: convo_id,
             reply,
-            cards: None,
-        });
+            cards: None, error: None });
     }
 
     if !is_app_scope_query(&message, &history) {
@@ -1183,8 +1183,7 @@ async fn ai_chat(
         return Ok(AiChatResponse {
             conversation_id: convo_id,
             reply,
-            cards: None,
-        });
+            cards: None, error: None });
     }
 
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
@@ -1247,7 +1246,7 @@ async fn ai_chat(
                     &assistant_meta("sql", None, Some(&cards)),
                     &linked_ids, &now,
                 ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
             }
 
             // Fallback: rank in-memory using normalized pay score, then recency.
@@ -1280,7 +1279,7 @@ async fn ai_chat(
                     &assistant_meta("local", None, Some(&cards)),
                     &linked_ids, &now,
                 ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
             }
 
             // JSON-mode ranking: SQL/local found nothing usable. Hand the
@@ -1339,7 +1338,7 @@ async fn ai_chat(
                             &assistant_meta("ollama", None, Some(&cards)),
                             &linked_ids, &now,
                         ).map_err(|e| e.to_string())?;
-                        return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                        return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
                     }
                 }
                 // JSON parse failed or returned no valid IDs — fall through.
@@ -1417,7 +1416,7 @@ async fn ai_chat(
                                 &assistant_meta("ollama", None, Some(&cards)),
                                 &linked_ids, &now,
                             ).map_err(|e| e.to_string())?;
-                            return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                            return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
                         }
                         Err(_) => {} // fall through to general Ollama path
                     }
@@ -1471,7 +1470,7 @@ async fn ai_chat(
                         &assistant_meta("local", None, Some(&cards)),
                         &linked_ids, &now,
                     ).map_err(|e| e.to_string())?;
-                    return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                    return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
                 }
 
                 // No summaries — ask Ollama in JSON mode for typed
@@ -1532,7 +1531,7 @@ async fn ai_chat(
                             &assistant_meta("ollama", None, Some(&cards)),
                             &linked_ids, &now,
                         ).map_err(|e| e.to_string())?;
-                        return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                        return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
                     }
                 }
                 // JSON-mode failed or empty — fall through to general Ollama.
@@ -1584,9 +1583,41 @@ async fn ai_chat(
                     &assistant_meta("sql", None, Some(&cards)),
                     &linked_ids, &now,
                 ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards) });
+                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
             }
-            // No FTS hits — fall through to general Ollama path.
+
+            // Both FTS and the semantic fallback returned nothing. Short-circuit
+            // with a structured soft error instead of handing a vague "I can't
+            // find anything" to the general Ollama path — the frontend can
+            // render a dedicated empty state and the eval harness can assert
+            // on the code rather than prose.
+            let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+            let latency = started.elapsed().as_millis() as i64;
+            let reply = format!("No jobs matching \"{query}\" were found in the current scan.");
+            let _ = state.db.log_ai_run(&AiRunLog {
+                task_type: "chat",
+                latency_ms: latency,
+                status: "no_matches",
+                created_at: &now,
+                intent: Some(intent_str),
+                route: Some("search_keyword_no_matches"),
+                retrieval_ms: Some(retrieval_ms),
+                ..Default::default()
+            });
+            state.db.append_ai_message(
+                convo_id, "assistant", &reply,
+                &assistant_meta("sql", None, None),
+                &[], &now,
+            ).map_err(|e| e.to_string())?;
+            return Ok(AiChatResponse {
+                conversation_id: convo_id,
+                reply,
+                cards: None,
+                error: Some(AiChatError {
+                    code: "NO_MATCHES".to_string(),
+                    message: format!("No jobs matched '{query}'."),
+                }),
+            });
         }
 
         ChatIntent::General => {}
@@ -1676,7 +1707,7 @@ Technical detail: {}",
                 &assistant_meta("local", Some("ollama_unreachable"), None),
                 &[], &now,
             ).map_err(|e| e.to_string())?;
-            return Ok(AiChatResponse { conversation_id: convo_id, reply: fallback, cards: None });
+            return Ok(AiChatResponse { conversation_id: convo_id, reply: fallback, cards: None, error: None });
         }
     };
     if response_violates_app_scope(&reply) {
@@ -1709,6 +1740,7 @@ Technical detail: {}",
         conversation_id: convo_id,
         reply,
         cards: if ollama_cards.is_empty() { None } else { Some(ollama_cards) },
+        error: None,
     })
 }
 
