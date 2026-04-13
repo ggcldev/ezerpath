@@ -1,5 +1,6 @@
 pub mod ollama;
 pub mod prompts;
+pub mod followup;
 pub mod ranking;
 pub mod sentence_service;
 

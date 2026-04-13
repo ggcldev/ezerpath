@@ -499,6 +499,43 @@ async fn semantic_search_fallback(
     state.db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())
 }
 
+fn format_followup_select_reply(jobs: &[Job]) -> String {
+    if jobs.is_empty() {
+        return "No matching jobs from the previous result.".to_string();
+    }
+    let lead = match jobs.len() {
+        1 => "Here's the one you picked:".to_string(),
+        n => format!("Here are the {n} you picked:"),
+    };
+    let mut lines = vec![lead];
+    for (i, j) in jobs.iter().enumerate() {
+        let company = if j.company.is_empty() { "Unknown company" } else { j.company.as_str() };
+        lines.push(format!("{}. {} — {}", i + 1, j.title, company));
+    }
+    lines.join("\n")
+}
+
+fn format_followup_describe_reply(jobs: &[Job]) -> String {
+    if jobs.is_empty() {
+        return "No matching jobs from the previous result.".to_string();
+    }
+    let lead = match jobs.len() {
+        1 => "Here's the summary:".to_string(),
+        n => format!("Here are the summaries for the {n} you asked about:"),
+    };
+    let mut lines = vec![lead];
+    for j in jobs {
+        let company = if j.company.is_empty() { "Unknown company" } else { j.company.as_str() };
+        let summary = if j.summary.trim().is_empty() {
+            "No summary available."
+        } else {
+            j.summary.as_str()
+        };
+        lines.push(format!("\n{} — {}\n{}", j.title, company, summary));
+    }
+    lines.join("\n")
+}
+
 fn format_search_keyword_reply(query: &str, jobs: &[Job]) -> String {
     if jobs.is_empty() {
         return format!("No jobs found matching \"{query}\".");
@@ -1443,6 +1480,64 @@ async fn ai_chat(
                             message: "Linked job rows no longer exist.".to_string(),
                         }),
                     });
+                }
+                // Fast-path: try the local resolver before touching Ollama.
+                // Simple ordinal / prefix-count / select-all phrasing gets
+                // answered from prior cards + stored summaries with zero
+                // LLM cost and zero parse-failure surface. Anything the
+                // resolver isn't confident about falls through to the
+                // existing JSON-mode path untouched.
+                if let Some(action) = ai::followup::resolve_followup(&message, &prev_ids) {
+                    use ai::followup::FollowUpAction;
+                    let (selected_ids, wants_description) = match action {
+                        FollowUpAction::Select(ids) => (ids, false),
+                        FollowUpAction::Describe(ids) => (ids, true),
+                    };
+                    let selected_set: std::collections::HashSet<i64> =
+                        selected_ids.iter().copied().collect();
+                    let target_jobs: Vec<Job> = linked_jobs
+                        .iter()
+                        .filter(|j| j.id.map(|id| selected_set.contains(&id)).unwrap_or(false))
+                        .cloned()
+                        .collect();
+                    if !target_jobs.is_empty() {
+                        let reply = if wants_description {
+                            format_followup_describe_reply(&target_jobs)
+                        } else {
+                            format_followup_select_reply(&target_jobs)
+                        };
+                        let cards = jobs_to_cards(&target_jobs);
+                        let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+                        let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+                        let latency = started.elapsed().as_millis() as i64;
+                        let _ = state.db.log_ai_run(&AiRunLog {
+                            task_type: "chat",
+                            latency_ms: latency,
+                            status: "success_followup_local",
+                            created_at: &now,
+                            intent: Some(intent_str),
+                            route: Some(if wants_description {
+                                "followup_local_describe"
+                            } else {
+                                "followup_local_select"
+                            }),
+                            candidate_job_ids: Some(&prev_ids),
+                            final_job_ids: Some(&linked_ids),
+                            retrieval_ms: Some(retrieval_ms),
+                            ..Default::default()
+                        });
+                        state.db.append_ai_message(
+                            convo_id, "assistant", &reply,
+                            &assistant_meta("local", None, Some(&cards)),
+                            &linked_ids, &now,
+                        ).map_err(|e| e.to_string())?;
+                        return Ok(AiChatResponse {
+                            conversation_id: convo_id,
+                            reply,
+                            cards: Some(cards),
+                            error: None,
+                        });
+                    }
                 }
                 {
                     // Build focused context for Ollama with only the linked jobs

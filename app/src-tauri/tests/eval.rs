@@ -9,6 +9,7 @@
 // point for fixing it.
 
 use chrono::Utc;
+use ezerpath_lib::ai::followup::{resolve_followup, FollowUpAction};
 use ezerpath_lib::ai::ranking::rank_embeddings_against_query;
 use ezerpath_lib::db::{build_fts5_query, Database, Job};
 use serde::Deserialize;
@@ -275,4 +276,63 @@ fn semantic_fallback_ranks_by_cosine_similarity() {
         );
     }
     println!("===========================================\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Local follow-up resolver goldens
+//
+// Verifies that the lightweight fast-path in ai::followup correctly
+// short-circuits common reference phrasings (without an LLM call) and
+// bails out when the message genuinely needs the model.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn followup_resolver_handles_common_phrasings() {
+    let prev_ids: Vec<i64> = vec![201, 202, 203, 204, 205];
+
+    // (label, message, expected outcome)
+    #[derive(Debug)]
+    enum Expected {
+        Select(Vec<i64>),
+        Describe(Vec<i64>),
+        Fallthrough,
+    }
+
+    let cases: Vec<(&str, &str, Expected)> = vec![
+        ("first-one",     "show me the first one",          Expected::Select(vec![201])),
+        ("second-one",    "just the second one please",     Expected::Select(vec![202])),
+        ("3rd-suffix",    "the 3rd one",                    Expected::Select(vec![203])),
+        ("last-one",      "give me the last one",           Expected::Select(vec![205])),
+        ("first-two",     "show me the first two",          Expected::Select(vec![201, 202])),
+        ("top-3",         "just top 3",                     Expected::Select(vec![201, 202, 203])),
+        ("all-of-them",   "show me all of them",            Expected::Select(prev_ids.clone())),
+        ("those",         "those",                          Expected::Select(prev_ids.clone())),
+        ("describe-two",  "describe the first two",         Expected::Describe(vec![201, 202])),
+        ("summary-all",   "summary of all of them",         Expected::Describe(prev_ids.clone())),
+        ("compare",       "compare the first two",          Expected::Fallthrough),
+        ("why-question",  "why is the first one better",    Expected::Fallthrough),
+        ("new-search",    "find me rust jobs",              Expected::Fallthrough),
+    ];
+
+    println!("\n=== Follow-up Resolver Goldens ({} cases) ===", cases.len());
+    let mut failures: Vec<String> = Vec::new();
+    for (label, message, expected) in &cases {
+        let got = resolve_followup(message, &prev_ids);
+        let ok = match (&got, expected) {
+            (Some(FollowUpAction::Select(ids)), Expected::Select(want)) => ids == want,
+            (Some(FollowUpAction::Describe(ids)), Expected::Describe(want)) => ids == want,
+            (None, Expected::Fallthrough) => true,
+            _ => false,
+        };
+        let mark = if ok { "✓" } else { "✗" };
+        println!("  {} {:<14}  {:?}", mark, label, got);
+        if !ok {
+            failures.push(format!("{label}: got {got:?}, wanted {expected:?}"));
+        }
+    }
+    println!("============================================\n");
+    assert!(
+        failures.is_empty(),
+        "follow-up resolver goldens failed: {failures:?}"
+    );
 }
