@@ -133,7 +133,7 @@ Living checklist for the upgrades agreed on after the GPT-5 architecture review.
 
 ---
 
-## #5 — Golden-query evaluation harness ☐
+## #5 — Golden-query evaluation harness ✅
 
 **Why fifth:** turns prompt-tweaking from guesswork into engineering. With #2 in place, this is the thing that lets us actually measure whether #3 and #4 helped.
 

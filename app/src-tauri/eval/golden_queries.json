@@ -1,0 +1,98 @@
+[
+  {
+    "id": "rank-seo-top3",
+    "query": "top 3 highest paying SEO jobs",
+    "route": "ranking",
+    "n": 3,
+    "title_terms": ["seo"],
+    "expected_source_ids": ["seo-005", "seo-001", "seo-002"]
+  },
+  {
+    "id": "rank-all-top5",
+    "query": "top 5 best paying jobs overall",
+    "route": "ranking",
+    "n": 5,
+    "title_terms": [],
+    "expected_source_ids": ["dev-002", "seo-005", "dev-003", "dev-001", "seo-001"]
+  },
+  {
+    "id": "rank-content-writer",
+    "query": "top paying content writer roles",
+    "route": "ranking",
+    "n": 3,
+    "title_terms": ["content", "writer"],
+    "expected_source_ids": ["cw-002", "cw-001", "cw-003"]
+  },
+  {
+    "id": "rank-react",
+    "query": "highest paying React developer jobs",
+    "route": "ranking",
+    "n": 2,
+    "title_terms": ["react"],
+    "expected_source_ids": ["dev-002", "dev-001"]
+  },
+  {
+    "id": "rank-bookkeeper",
+    "query": "best paying bookkeeper jobs",
+    "route": "ranking",
+    "n": 2,
+    "title_terms": ["bookkeeper", "accountant"],
+    "expected_source_ids": ["bk-002", "bk-001"]
+  },
+  {
+    "id": "search-link-building",
+    "query": "find jobs about link building",
+    "route": "search_keyword",
+    "search_query": "link building",
+    "n": 5,
+    "expected_source_ids": ["lb-001", "lb-002", "lb-003"]
+  },
+  {
+    "id": "search-react",
+    "query": "show me jobs with react",
+    "route": "search_keyword",
+    "search_query": "react",
+    "n": 5,
+    "expected_source_ids": ["dev-001", "dev-002"]
+  },
+  {
+    "id": "search-quickbooks",
+    "query": "find jobs about quickbooks",
+    "route": "search_keyword",
+    "search_query": "quickbooks",
+    "n": 5,
+    "expected_source_ids": ["bk-001", "bk-002"]
+  },
+  {
+    "id": "search-wordpress",
+    "query": "search for jobs about wordpress",
+    "route": "search_keyword",
+    "search_query": "wordpress",
+    "n": 5,
+    "expected_source_ids": ["dev-004"]
+  },
+  {
+    "id": "search-figma",
+    "query": "find jobs with figma",
+    "route": "search_keyword",
+    "search_query": "figma",
+    "n": 5,
+    "expected_source_ids": ["des-002"]
+  },
+  {
+    "id": "search-postgres",
+    "query": "find jobs about postgres",
+    "route": "search_keyword",
+    "search_query": "postgres",
+    "n": 5,
+    "expected_source_ids": ["dev-002", "dev-003"]
+  },
+  {
+    "id": "search-outreach",
+    "query": "show me jobs with outreach",
+    "route": "search_keyword",
+    "search_query": "outreach",
+    "n": 5,
+    "expected_source_ids": ["lb-001", "lb-002", "lb-003"]
+  }
+]

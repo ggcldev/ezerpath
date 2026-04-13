@@ -1,0 +1,142 @@
+[
+  {
+    "source_id": "seo-001",
+    "title": "Senior SEO Specialist",
+    "company": "Acme Marketing",
+    "pay": "$2500/mo",
+    "summary": "Lead on-page and technical SEO for B2B SaaS clients. Keyword research, audits, schema markup."
+  },
+  {
+    "source_id": "seo-002",
+    "title": "SEO Specialist",
+    "company": "Bright Agency",
+    "pay": "$1500/mo",
+    "summary": "Manage SEO campaigns for ecommerce brands. Reporting and link audits."
+  },
+  {
+    "source_id": "seo-003",
+    "title": "SEO Specialist",
+    "company": "GrowthHub",
+    "pay": "$8/hr",
+    "summary": "Hourly SEO work, content briefs and on-page optimization."
+  },
+  {
+    "source_id": "seo-004",
+    "title": "Junior SEO Analyst",
+    "company": "RankUp",
+    "pay": "$600/mo",
+    "summary": "Entry-level SEO tasks: keyword tracking, GSC monitoring, basic audits."
+  },
+  {
+    "source_id": "seo-005",
+    "title": "SEO Strategist",
+    "company": "Pivot Digital",
+    "pay": "$3200/mo",
+    "summary": "Senior SEO strategy for enterprise clients. Technical SEO, content strategy, analytics."
+  },
+  {
+    "source_id": "lb-001",
+    "title": "Link Building Specialist",
+    "company": "OutreachPro",
+    "pay": "$1200/mo",
+    "summary": "Build high-quality backlinks via outreach. Manage relationships with publishers."
+  },
+  {
+    "source_id": "lb-002",
+    "title": "Outreach Manager",
+    "company": "LinkLab",
+    "pay": "$1800/mo",
+    "summary": "Lead outreach campaigns for guest posting and link building. Email templates and CRM."
+  },
+  {
+    "source_id": "lb-003",
+    "title": "Backlink Outreach Coordinator",
+    "company": "Acme Marketing",
+    "pay": "$900/mo",
+    "summary": "Coordinate link building outreach across multiple client accounts."
+  },
+  {
+    "source_id": "cw-001",
+    "title": "Content Writer",
+    "company": "WordCraft",
+    "pay": "$1500/mo",
+    "summary": "Write blog posts and long-form articles on tech topics. SEO-aware writing."
+  },
+  {
+    "source_id": "cw-002",
+    "title": "Senior Content Writer",
+    "company": "Pivot Digital",
+    "pay": "$2200/mo",
+    "summary": "Senior writer producing thought-leadership content for B2B brands."
+  },
+  {
+    "source_id": "cw-003",
+    "title": "Copywriter",
+    "company": "SnapAds",
+    "pay": "$1100/mo",
+    "summary": "Short-form ad copy for paid social and Google Ads campaigns."
+  },
+  {
+    "source_id": "dev-001",
+    "title": "React Developer",
+    "company": "BuildHaus",
+    "pay": "$2800/mo",
+    "summary": "Frontend React work for SaaS dashboards. TypeScript, Tailwind, REST APIs."
+  },
+  {
+    "source_id": "dev-002",
+    "title": "Full Stack Developer (React + Node)",
+    "company": "Stackly",
+    "pay": "$3500/mo",
+    "summary": "Build full-stack features in React and Node.js. Postgres and AWS."
+  },
+  {
+    "source_id": "dev-003",
+    "title": "Backend Engineer",
+    "company": "Datapipe",
+    "pay": "$3000/mo",
+    "summary": "Backend services in Go. Postgres, Redis, message queues."
+  },
+  {
+    "source_id": "dev-004",
+    "title": "Junior Web Developer",
+    "company": "Pagely",
+    "pay": "$700/mo",
+    "summary": "WordPress and PHP maintenance for client sites."
+  },
+  {
+    "source_id": "des-001",
+    "title": "Graphic Designer",
+    "company": "PixelForge",
+    "pay": "$1200/mo",
+    "summary": "Design social graphics, ad creatives, and brand assets."
+  },
+  {
+    "source_id": "des-002",
+    "title": "UI/UX Designer",
+    "company": "Stackly",
+    "pay": "$2400/mo",
+    "summary": "Design SaaS interfaces in Figma. Prototype and user-test new flows."
+  },
+  {
+    "source_id": "bk-001",
+    "title": "Bookkeeper",
+    "company": "LedgerCo",
+    "pay": "$900/mo",
+    "summary": "Quickbooks bookkeeping for small businesses. Monthly reconciliation."
+  },
+  {
+    "source_id": "bk-002",
+    "title": "Senior Accountant",
+    "company": "LedgerCo",
+    "pay": "$2000/mo",
+    "summary": "Senior accounting with quickbooks and xero experience."
+  },
+  {
+    "source_id": "va-001",
+    "title": "Virtual Assistant",
+    "company": "RemoteHand",
+    "pay": "$500/mo",
+    "summary": "Email management, scheduling, light research for executives."
+  }
+]

@@ -1,6 +1,6 @@
 mod ai;
 mod crawler;
-mod db;
+pub mod db;
 
 use ai::ollama::OllamaClient;
 use ai::ollama::ChatMessage;
