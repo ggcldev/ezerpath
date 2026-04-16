@@ -761,11 +761,12 @@ fn normalize_asset_url(raw: &str) -> String {
 /// - Same-day: `"today"`, `"just now"`, `"X hours ago"`, `"X minutes ago"`
 /// - Relative:  `"yesterday"`, `"N day(s) ago"`, `"N week(s) ago"`,
 ///              `"N month(s) ago"`, `"N year(s) ago"`
+/// - ISO-like:  `"2026-04-16 05:20:50"`, `"2026-04-16"` (the actual format from onlinejobs.ph)
 /// - Absolute:  `"April 15, 2026"`, `"Apr 5, 2026"` (Month D(D), YYYY)
 ///
 /// Returns `None` when the format is not recognised; callers should treat
 /// an unknown date as "keep" (conservative).
-fn posted_at_days_ago(posted_at: &str, now: &chrono::DateTime<Utc>) -> Option<i64> {
+pub(crate) fn posted_at_days_ago(posted_at: &str, now: &chrono::DateTime<Utc>) -> Option<i64> {
     let s = posted_at.trim().to_lowercase();
     if s.is_empty() {
         return None;
@@ -804,6 +805,17 @@ fn posted_at_days_ago(posted_at: &str, now: &chrono::DateTime<Utc>) -> Option<i6
             };
             return Some(days);
         }
+    }
+
+    // ISO-like: "2026-04-16 05:20:50" (the actual format from onlinejobs.ph)
+    if let Ok(naive_dt) = chrono::NaiveDateTime::parse_from_str(posted_at.trim(), "%Y-%m-%d %H:%M:%S") {
+        let diff = now.date_naive().signed_duration_since(naive_dt.date()).num_days();
+        return Some(diff.max(0));
+    }
+    // Also try date-only ISO: "2026-04-16"
+    if let Ok(naive_d) = chrono::NaiveDate::parse_from_str(posted_at.trim(), "%Y-%m-%d") {
+        let diff = now.date_naive().signed_duration_since(naive_d).num_days();
+        return Some(diff.max(0));
     }
 
     // Absolute: "Month D(D), YYYY"  e.g. "April 5, 2026" or "April 15, 2026"
@@ -876,6 +888,17 @@ mod tests {
         assert_eq!(posted_at_days_ago("April 9, 2026", &now), Some(7));
         assert_eq!(posted_at_days_ago("January 1, 2026", &now), Some(105));
         assert_eq!(posted_at_days_ago("Apr 15, 2026", &now), Some(1));
+    }
+
+    #[test]
+    fn posted_at_days_ago_iso() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap();
+        assert_eq!(posted_at_days_ago("2026-04-16 05:20:50", &now), Some(0));
+        assert_eq!(posted_at_days_ago("2026-04-15 22:09:14", &now), Some(1));
+        assert_eq!(posted_at_days_ago("2026-04-13 10:00:00", &now), Some(3));
+        assert_eq!(posted_at_days_ago("2026-04-09 08:00:00", &now), Some(7));
+        assert_eq!(posted_at_days_ago("2026-04-16", &now), Some(0));
+        assert_eq!(posted_at_days_ago("2026-04-14", &now), Some(2));
     }
 
     #[test]

@@ -951,7 +951,22 @@ async fn clear_all_jobs(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_jobs(state: State<'_, AppState>, keyword: Option<String>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, String> {
-    state.db.get_jobs(keyword.as_deref(), watchlisted_only, days_ago).map_err(|e| e.to_string())
+    let mut jobs = state.db.get_jobs(keyword.as_deref(), watchlisted_only, days_ago).map_err(|e| e.to_string())?;
+
+    // The DB query filters by scraped_at (when we first saw the job).
+    // Also filter by posted_at (when it was actually posted on the site)
+    // to catch old data that slipped in before the crawler date guard.
+    if let Some(days) = days_ago {
+        let now = chrono::Utc::now();
+        jobs.retain(|job| {
+            match crawler::posted_at_days_ago(&job.posted_at, &now) {
+                Some(d) => d <= days,
+                None => true,
+            }
+        });
+    }
+
+    Ok(jobs)
 }
 
 #[tauri::command]
