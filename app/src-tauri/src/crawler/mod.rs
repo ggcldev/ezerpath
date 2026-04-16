@@ -131,6 +131,21 @@ impl Crawler {
                 break;
             }
 
+            // Client-side date guard: the site's dateposted filter is not always
+            // precise. Drop any job whose posted_at parses to older than requested.
+            let cutoff = days as i64;
+            let now_dt = Utc::now();
+            jobs.retain(|job| {
+                match posted_at_days_ago(&job.posted_at, &now_dt) {
+                    Some(d) => d <= cutoff,
+                    None => true, // unparseable posted_at → keep conservatively
+                }
+            });
+            if jobs.is_empty() {
+                // All jobs on this page are out of range; later pages will be older.
+                break;
+            }
+
             stats.pages += 1;
             for job in &jobs {
                 stats.found += 1;
@@ -739,9 +754,95 @@ fn normalize_asset_url(raw: &str) -> String {
     String::new()
 }
 
+/// Parse a human-readable `posted_at` string as returned by OnlineJobs.ph
+/// and return how many days ago the job was posted.
+///
+/// Handles:
+/// - Same-day: `"today"`, `"just now"`, `"X hours ago"`, `"X minutes ago"`
+/// - Relative:  `"yesterday"`, `"N day(s) ago"`, `"N week(s) ago"`,
+///              `"N month(s) ago"`, `"N year(s) ago"`
+/// - Absolute:  `"April 15, 2026"`, `"Apr 5, 2026"` (Month D(D), YYYY)
+///
+/// Returns `None` when the format is not recognised; callers should treat
+/// an unknown date as "keep" (conservative).
+fn posted_at_days_ago(posted_at: &str, now: &chrono::DateTime<Utc>) -> Option<i64> {
+    let s = posted_at.trim().to_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Same-day indicators
+    if s == "today"
+        || s == "just now"
+        || s.contains("hours ago")
+        || s.contains("hour ago")
+        || s.contains("minutes ago")
+        || s.contains("minute ago")
+        || s.contains("seconds ago")
+    {
+        return Some(0);
+    }
+    if s.contains("yesterday") {
+        return Some(1);
+    }
+
+    // Relative: "N day(s) / week(s) / month(s) / year(s) ago"
+    let words: Vec<&str> = s.split_whitespace().collect();
+    if words.len() >= 3 && words.last() == Some(&"ago") {
+        if let Ok(n) = words[0].parse::<i64>() {
+            let unit = words[1];
+            let days = if unit.starts_with("day") {
+                n
+            } else if unit.starts_with("week") {
+                n * 7
+            } else if unit.starts_with("month") {
+                n * 30
+            } else if unit.starts_with("year") {
+                n * 365
+            } else {
+                return None;
+            };
+            return Some(days);
+        }
+    }
+
+    // Absolute: "Month D(D), YYYY"  e.g. "April 5, 2026" or "April 15, 2026"
+    let parts: Vec<&str> = posted_at.trim().split_whitespace().collect();
+    if parts.len() == 3 {
+        let month_str = parts[0].to_lowercase();
+        let day_str = parts[1].trim_end_matches(',');
+        let year_str = parts[2];
+        if let (Ok(day), Ok(year)) = (day_str.parse::<u32>(), year_str.parse::<i32>()) {
+            let month: u32 = match month_str.as_str() {
+                "january"   | "jan"  => 1,
+                "february"  | "feb"  => 2,
+                "march"     | "mar"  => 3,
+                "april"     | "apr"  => 4,
+                "may"                => 5,
+                "june"      | "jun"  => 6,
+                "july"      | "jul"  => 7,
+                "august"    | "aug"  => 8,
+                "september" | "sep"
+                            | "sept" => 9,
+                "october"   | "oct"  => 10,
+                "november"  | "nov"  => 11,
+                "december"  | "dec"  => 12,
+                _                    => return None,
+            };
+            if let Some(naive) = chrono::NaiveDate::from_ymd_opt(year, month, day) {
+                let diff = now.date_naive().signed_duration_since(naive).num_days();
+                return Some(diff.max(0));
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_allowed_job_url;
+    use super::{is_allowed_job_url, posted_at_days_ago};
+    use chrono::{TimeZone, Utc};
 
     #[test]
     fn allows_only_https_onlinejobs_hosts() {
@@ -750,5 +851,37 @@ mod tests {
         assert!(!is_allowed_job_url("http://www.onlinejobs.ph/jobseekers/job/123"));
         assert!(!is_allowed_job_url("https://evil.example.com/jobseekers/job/123"));
         assert!(!is_allowed_job_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn posted_at_days_ago_relative() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap();
+        assert_eq!(posted_at_days_ago("today", &now), Some(0));
+        assert_eq!(posted_at_days_ago("just now", &now), Some(0));
+        assert_eq!(posted_at_days_ago("3 hours ago", &now), Some(0));
+        assert_eq!(posted_at_days_ago("yesterday", &now), Some(1));
+        assert_eq!(posted_at_days_ago("3 days ago", &now), Some(3));
+        assert_eq!(posted_at_days_ago("1 week ago", &now), Some(7));
+        assert_eq!(posted_at_days_ago("2 weeks ago", &now), Some(14));
+        assert_eq!(posted_at_days_ago("1 month ago", &now), Some(30));
+        assert_eq!(posted_at_days_ago("2 months ago", &now), Some(60));
+    }
+
+    #[test]
+    fn posted_at_days_ago_absolute() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap();
+        assert_eq!(posted_at_days_ago("April 16, 2026", &now), Some(0));
+        assert_eq!(posted_at_days_ago("April 15, 2026", &now), Some(1));
+        assert_eq!(posted_at_days_ago("April 13, 2026", &now), Some(3));
+        assert_eq!(posted_at_days_ago("April 9, 2026", &now), Some(7));
+        assert_eq!(posted_at_days_ago("January 1, 2026", &now), Some(105));
+        assert_eq!(posted_at_days_ago("Apr 15, 2026", &now), Some(1));
+    }
+
+    #[test]
+    fn posted_at_days_ago_unknown_returns_none() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap();
+        assert_eq!(posted_at_days_ago("", &now), None);
+        assert_eq!(posted_at_days_ago("some random text", &now), None);
     }
 }
