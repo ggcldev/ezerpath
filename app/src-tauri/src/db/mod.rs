@@ -502,6 +502,8 @@ impl Database {
         }
 
         // Existing job found again in a newer scan: refresh key fields and attach to latest run.
+        // scraped_at is intentionally NOT updated here — it records when the job was first seen.
+        // Refreshing it would cause old jobs to pass the daysAgo filter incorrectly.
         conn.execute(
             "UPDATE jobs
              SET title = ?1,
@@ -512,14 +514,13 @@ impl Database {
                  url = ?6,
                  summary = ?7,
                  keyword = ?8,
-                 scraped_at = ?9,
                  is_new = 0,
-                 run_id = ?10,
-                 salary_min = ?13,
-                 salary_max = ?14,
-                 salary_currency = ?15,
-                 salary_period = ?16
-             WHERE source = ?11 AND source_id = ?12",
+                 run_id = ?9,
+                 salary_min = ?12,
+                 salary_max = ?13,
+                 salary_currency = ?14,
+                 salary_period = ?15
+             WHERE source = ?10 AND source_id = ?11",
             params![
                 job.title,
                 job.company,
@@ -529,7 +530,6 @@ impl Database {
                 job.url,
                 job.summary,
                 job.keyword,
-                job.scraped_at,
                 run_id,
                 job.source,
                 job.source_id,
