@@ -980,6 +980,11 @@ async fn toggle_watchlist(state: State<'_, AppState>, job_id: i64) -> Result<boo
 }
 
 #[tauri::command]
+async fn toggle_applied(state: State<'_, AppState>, job_id: i64) -> Result<bool, String> {
+    state.db.toggle_applied(job_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_keywords(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     state.db.get_keywords().map_err(|e| e.to_string())
 }
@@ -2088,6 +2093,7 @@ pub fn run() {
             get_jobs,
             fetch_job_details,
             toggle_watchlist,
+            toggle_applied,
             get_keywords,
             add_keyword,
             remove_keyword,

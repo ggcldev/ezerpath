@@ -273,6 +273,7 @@ impl Crawler {
                 salary_max: None,
                 salary_currency: String::new(),
                 salary_period: String::new(),
+                applied: false,
             });
         }
         if jobs.is_empty() {
@@ -522,6 +523,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            applied: false,
         });
     }
 

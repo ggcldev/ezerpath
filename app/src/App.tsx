@@ -27,6 +27,7 @@ interface Job {
   is_new: boolean;
   watchlisted: boolean;
   run_id: number | null;
+  applied: boolean;
 }
 
 interface CrawlStats {
@@ -138,6 +139,14 @@ function App() {
   const handleToggleWatchlist = async (jobId: number) => {
     await runMutation(
       () => invoke("toggle_watchlist", { jobId }),
+      bump,
+      setGlobalError
+    );
+  };
+
+  const handleToggleApplied = async (jobId: number) => {
+    await runMutation(
+      () => invoke("toggle_applied", { jobId }),
       bump,
       setGlobalError
     );
@@ -379,10 +388,11 @@ function App() {
               runs={runs}
               crawling={crawling()}
               onToggleWatchlist={handleToggleWatchlist}
+              onToggleApplied={handleToggleApplied}
             />
           </Match>
           <Match when={view() === "watchlist"}>
-            <WatchlistView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} />
+            <WatchlistView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} onToggleApplied={handleToggleApplied} />
           </Match>
           <Match when={view() === "ezer"}>
             <EzerView />

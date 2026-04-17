@@ -20,11 +20,13 @@ interface Job {
   scraped_at: string;
   is_new: boolean;
   watchlisted: boolean;
+  applied: boolean;
 }
 
 interface WatchlistViewProps {
   jobs: Resource<Job[]>;
   onToggleWatchlist: (jobId: number) => void;
+  onToggleApplied: (jobId: number) => void;
 }
 
 function formatDate(raw: string): string {
@@ -35,8 +37,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [96, 340, 110, 80, 100, 56];
+const COLS = ["", "Posted", "Title", "Keyword", "Source", "Pay", "Link"];
+const DEFAULT_WIDTHS = [24, 96, 340, 110, 80, 100, 56];
 const STAR_W = 32;
 
 export default function WatchlistView(props: WatchlistViewProps) {
@@ -185,7 +187,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
                       <tr
                         class={`table-row cursor-pointer border-b border-mk-separator/50 hover:bg-mk-row-hover ${
                           rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
-                        }`}
+                        } ${job.applied ? "opacity-50 grayscale-[50%]" : ""}`}
                         onClick={() => setSelectedJob(job)}
                         onMouseEnter={(e) => rowHoverEnter(e.currentTarget)}
                         onMouseLeave={(e) => rowHoverLeave(e.currentTarget)}
@@ -196,6 +198,15 @@ export default function WatchlistView(props: WatchlistViewProps) {
                             aria-label="Remove from watchlist"
                             onClick={(e) => { e.stopPropagation(); props.onToggleWatchlist(job.id); }}
                           >{"\u2605"}</button>
+                        </td>
+                        <td class="text-center py-2.5">
+                          <button
+                            class={`text-[15px] leading-none transition-colors ${job.applied ? "text-mk-green" : "text-mk-tertiary hover:text-mk-green"}`}
+                            aria-label={job.applied ? "Mark as unapplied" : "Mark as applied"}
+                            onClick={(e) => { e.stopPropagation(); props.onToggleApplied(job.id); }}
+                          >
+                            {job.applied ? "\u2714" : "\u25CB"}
+                          </button>
                         </td>
                         <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
                         <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>

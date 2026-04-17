@@ -26,6 +26,7 @@ pub struct Job {
     pub salary_max: Option<f64>,
     pub salary_currency: String,
     pub salary_period: String,
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +218,7 @@ impl Database {
                 scraped_at  TEXT NOT NULL,
                 is_new      INTEGER DEFAULT 1,
                 watchlisted INTEGER DEFAULT 0,
+                applied     INTEGER DEFAULT 0,
                 UNIQUE(source, source_id)
             );
 
@@ -315,6 +317,8 @@ impl Database {
         conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_max REAL;").ok();
         conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_currency TEXT DEFAULT '';").ok();
         conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_period TEXT DEFAULT '';").ok();
+        // Migration: add applied tracker.
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN applied INTEGER DEFAULT 0;").ok();
         // Migration: add linked job IDs for chat follow-up context.
         conn.execute_batch("ALTER TABLE ai_messages ADD COLUMN linked_job_ids_json TEXT DEFAULT '[]';").ok();
         // Migration: telemetry breakdown on ai_runs (phase #2).
@@ -488,12 +492,12 @@ impl Database {
         let parsed = parse_pay(&job.pay);
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO jobs (source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, run_id, salary_min, salary_max, salary_currency, salary_period)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 job.source, job.source_id, job.title, job.company, job.company_logo_url, job.pay,
                 job.posted_at, job.url, job.summary, job.keyword, job.scraped_at,
                 job.is_new as i32, run_id,
-                parsed.min, parsed.max, parsed.currency, parsed.period,
+                parsed.min, parsed.max, parsed.currency, parsed.period, job.applied as i32,
             ],
         )?;
 
@@ -519,7 +523,8 @@ impl Database {
                  salary_min = ?12,
                  salary_max = ?13,
                  salary_currency = ?14,
-                 salary_period = ?15
+                 salary_period = ?15,
+                 applied = ?16
              WHERE source = ?10 AND source_id = ?11",
             params![
                 job.title,
@@ -537,6 +542,7 @@ impl Database {
                 parsed.max,
                 parsed.currency,
                 parsed.period,
+                job.applied as i32,
             ],
         )?;
 
@@ -546,7 +552,7 @@ impl Database {
     pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut query = String::from(
-            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period, applied
              FROM jobs WHERE 1=1"
         );
         let mut bind_values: Vec<Value> = Vec::new();
@@ -585,7 +591,7 @@ impl Database {
         let sql = "SELECT j.id, j.source, j.source_id, j.title, j.company, j.company_logo_url,
                           j.pay, j.posted_at, j.url, j.summary, j.keyword, j.scraped_at,
                           j.is_new, j.watchlisted, j.run_id, j.salary_min, j.salary_max,
-                          j.salary_currency, j.salary_period
+                          j.salary_currency, j.salary_period, j.applied
                    FROM jobs_fts
                    JOIN jobs j ON j.id = jobs_fts.rowid
                    WHERE jobs_fts MATCH ?1
@@ -610,7 +616,7 @@ impl Database {
             .map(|(idx, _)| format!("WHEN ? THEN {}", idx))
             .collect();
         let query = format!(
-            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period, applied
              FROM jobs WHERE id IN ({})
              ORDER BY CASE id {} ELSE {} END",
             placeholders.join(","),
@@ -629,7 +635,7 @@ impl Database {
     pub fn get_top_paying_jobs(&self, keyword_filter: Option<&str>, title_terms: &[String], limit: usize) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut query = String::from(
-            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period
+            "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period, applied
              FROM jobs WHERE salary_min IS NOT NULL"
         );
         let mut bind_values: Vec<Value> = Vec::new();
@@ -692,6 +698,20 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(watchlisted)
+    }
+
+    pub fn toggle_applied(&self, job_id: i64) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE jobs SET applied = CASE WHEN applied = 1 THEN 0 ELSE 1 END WHERE id = ?1",
+            params![job_id],
+        )?;
+        let applied: bool = conn.query_row(
+            "SELECT applied FROM jobs WHERE id = ?1",
+            params![job_id],
+            |row| row.get(0),
+        )?;
+        Ok(applied)
     }
 
     pub fn get_keywords(&self) -> Result<Vec<String>, rusqlite::Error> {
@@ -1116,6 +1136,7 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         salary_max: row.get(16)?,
         salary_currency: row.get::<_, String>(17).unwrap_or_default(),
         salary_period: row.get::<_, String>(18).unwrap_or_default(),
+        applied: row.get::<_, i32>(19).unwrap_or(0) != 0,
     })
 }
 
@@ -1146,6 +1167,7 @@ mod tests {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            applied: false,
         }
     }
 
