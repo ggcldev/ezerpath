@@ -69,6 +69,8 @@ fn load_snapshot(db: &Database) -> HashMap<String, i64> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            applied: false,
+            job_type: String::new(),
         };
         db.insert_job(&job, run_id).expect("insert eval job");
     }
@@ -221,6 +223,8 @@ fn seed_semantic_corpus(db: &Database) -> HashMap<String, i64> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            applied: false,
+            job_type: String::new(),
         };
         db.insert_job(&job, run_id).expect("insert semantic job");
     }
