@@ -241,6 +241,19 @@ fn scoped_jobs_for_message(message: &str, all_jobs: &[Job], runs: &[ScanRun]) ->
         }
     }
 
+    // Filter by job type when the query explicitly requests full-time or part-time roles.
+    if lower.contains("full-time") || lower.contains("full time") || lower.contains("fulltime") {
+        let typed: Vec<Job> = scoped.iter()
+            .filter(|j| j.job_type.to_lowercase().contains("full"))
+            .cloned().collect();
+        if !typed.is_empty() { scoped = typed; }
+    } else if lower.contains("part-time") || lower.contains("part time") || lower.contains("parttime") {
+        let typed: Vec<Job> = scoped.iter()
+            .filter(|j| j.job_type.to_lowercase().contains("part"))
+            .cloned().collect();
+        if !typed.is_empty() { scoped = typed; }
+    }
+
     // Filter by meaningful terms from the query that match job titles.
     let stop_words = [
         "can", "you", "provide", "the", "top", "best", "paying", "highest",
@@ -249,6 +262,7 @@ fn scoped_jobs_for_message(message: &str, all_jobs: &[Job], runs: &[ScanRun]) ->
         "result", "results", "all", "my", "a", "an", "for", "with", "and", "or",
         "in", "of", "to", "what", "are", "is", "it", "how", "new", "each",
         "option", "options", "recommend", "suggest", "match", "matches",
+        "full-time", "part-time", "fulltime", "parttime", "hours", "hour", "weekly",
     ];
     let query_terms: Vec<String> = lower
         .split_whitespace()
@@ -694,11 +708,12 @@ fn build_ollama_system_prompt(jobs: &[Job]) -> String {
             }
         };
         format!(
-            "- [job_id={}] Title: {} | Company: {} | Pay: {} | Keyword: {} | Posted: {} | URL: {} | Summary: {}",
+            "- [job_id={}] Title: {} | Company: {} | Pay: {} | Type: {} | Keyword: {} | Posted: {} | URL: {} | Summary: {}",
             j.id.unwrap_or_default(),
             j.title,
             if j.company.is_empty() { "-" } else { &j.company },
             if j.pay.is_empty() { "-" } else { &j.pay },
+            if j.job_type.is_empty() { "-" } else { &j.job_type },
             if j.keyword.is_empty() { "-" } else { &j.keyword },
             if j.posted_at.is_empty() { "-" } else { &j.posted_at },
             if j.url.is_empty() { "-" } else { &j.url },
@@ -825,8 +840,11 @@ struct AppState {
 async fn run_crawl_inner(
     state: &AppState,
     days: Option<u32>,
+    sources: Option<&[String]>,
     on_progress: Option<&Channel<ScanProgress>>,
 ) -> Result<Vec<CrawlStats>, String> {
+    let scan_onlinejobs = sources.map_or(true, |s| s.iter().any(|x| x == "onlinejobs"));
+    let scan_bruntwork  = sources.map_or(true, |s| s.iter().any(|x| x == "bruntwork"));
     let _crawl_guard = state
         .crawl_lock
         .try_lock()
@@ -854,58 +872,70 @@ async fn run_crawl_inner(
     let mut total_found: i64 = 0;
     let mut total_new: i64 = 0;
 
-    for (idx, kw) in keywords.iter().enumerate() {
-        if let Some(ch) = on_progress {
-            let _ = ch.send(ScanProgress::KeywordStarted {
-                keyword: kw.clone(),
-                index: idx,
-                total: keywords.len(),
-            });
-        }
-
-        match state
-            .crawler
-            .crawl_keyword(kw, &state.db, date_days, run_id, on_progress)
-            .await
-        {
-            Ok(stats) => {
-                total_found += stats.found as i64;
-                total_new += stats.new as i64;
-
-                if let Some(ch) = on_progress {
-                    let _ = ch.send(ScanProgress::KeywordCompleted {
-                        keyword: kw.clone(),
-                        found: stats.found,
-                        new: stats.new,
-                        pages: stats.pages,
-                    });
-                }
-
-                all_stats.push(stats);
+    if scan_onlinejobs {
+        for (idx, kw) in keywords.iter().enumerate() {
+            if let Some(ch) = on_progress {
+                let _ = ch.send(ScanProgress::KeywordStarted {
+                    keyword: kw.clone(),
+                    index: idx,
+                    total: keywords.len(),
+                });
             }
-            Err(err) => {
-                let finished_at = chrono::Utc::now().to_rfc3339();
-                if let Err(mark_err) =
-                    state.db.fail_run(run_id, total_found, total_new, &err, &finished_at)
-                {
-                    let combined = format!("{err} (failed to mark run failed: {mark_err})");
+
+            match state
+                .crawler
+                .crawl_keyword(kw, &state.db, date_days, run_id, on_progress)
+                .await
+            {
+                Ok(stats) => {
+                    total_found += stats.found as i64;
+                    total_new += stats.new as i64;
+
+                    if let Some(ch) = on_progress {
+                        let _ = ch.send(ScanProgress::KeywordCompleted {
+                            keyword: kw.clone(),
+                            found: stats.found,
+                            new: stats.new,
+                            pages: stats.pages,
+                        });
+                    }
+
+                    all_stats.push(stats);
+                }
+                Err(err) => {
+                    let finished_at = chrono::Utc::now().to_rfc3339();
+                    if let Err(mark_err) =
+                        state.db.fail_run(run_id, total_found, total_new, &err, &finished_at)
+                    {
+                        let combined = format!("{err} (failed to mark run failed: {mark_err})");
+                        if let Some(ch) = on_progress {
+                            let _ = ch.send(ScanProgress::Failed {
+                                run_id,
+                                error: combined.clone(),
+                            });
+                        }
+                        return Err(combined);
+                    }
                     if let Some(ch) = on_progress {
                         let _ = ch.send(ScanProgress::Failed {
                             run_id,
-                            error: combined.clone(),
+                            error: err.clone(),
                         });
                     }
-                    return Err(combined);
+                    return Err(err);
                 }
-                if let Some(ch) = on_progress {
-                    let _ = ch.send(ScanProgress::Failed {
-                        run_id,
-                        error: err.clone(),
-                    });
-                }
-                return Err(err);
             }
         }
+    }
+
+    // Bruntwork: single fetch, filtered per keyword, non-fatal.
+    if scan_bruntwork {
+        let bw_stats = state.crawler.crawl_bruntwork(&keywords, &state.db, run_id, on_progress).await;
+        for s in &bw_stats {
+            total_found += s.found as i64;
+            total_new += s.new as i64;
+        }
+        all_stats.extend(bw_stats);
     }
 
     let finished_at = chrono::Utc::now().to_rfc3339();
@@ -929,9 +959,10 @@ async fn run_crawl_inner(
 async fn crawl_jobs(
     state: State<'_, AppState>,
     days: Option<u32>,
+    sources: Option<Vec<String>>,
     on_progress: Channel<ScanProgress>,
 ) -> Result<Vec<CrawlStats>, String> {
-    run_crawl_inner(state.inner(), days, Some(&on_progress)).await
+    run_crawl_inner(state.inner(), days, sources.as_deref(), Some(&on_progress)).await
 }
 
 #[tauri::command]
@@ -1091,8 +1122,8 @@ async fn index_jobs_embeddings(state: State<'_, AppState>) -> Result<EmbeddingIn
         .iter()
         .map(|j| {
             format!(
-                "Title: {}\nCompany: {}\nPay: {}\nKeyword: {}\nSummary: {}\nURL: {}",
-                j.title, j.company, j.pay, j.keyword, j.summary, j.url
+                "Title: {}\nCompany: {}\nPay: {}\nType: {}\nKeyword: {}\nSummary: {}\nURL: {}",
+                j.title, j.company, j.pay, j.job_type, j.keyword, j.summary, j.url
             )
         })
         .collect::<Vec<_>>();
@@ -2054,7 +2085,7 @@ async fn ai_start_scan_with_keywords(
     for kw in &keywords {
         state.db.add_keyword(kw).map_err(|e| e.to_string())?;
     }
-    run_crawl_inner(state.inner(), days, None).await
+    run_crawl_inner(state.inner(), days, None, None).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
