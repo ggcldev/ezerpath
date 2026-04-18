@@ -305,7 +305,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
     <Show when={props.job}>
       {(job) => (
         <aside class="absolute top-0 right-0 bottom-0 z-30 w-[760px] max-w-[78vw] min-w-[460px] border-l border-mk-separator bg-mk-bg/96 backdrop-blur-sm flex flex-col min-h-0 shadow-2xl animate-drawer-in">
-          <div class="sticky top-0 z-10 px-5 py-3 border-b border-mk-separator/80 bg-mk-bg/94 backdrop-blur-sm">
+          <div class="sticky top-0 z-10 px-5 py-3 border-b border-mk-separator/80 bg-mk-bg/94 backdrop-blur-sm animate-content-1">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Job Snapshot</p>
@@ -336,7 +336,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
           </div>
 
           <div class="flex-1 overflow-auto p-5 space-y-4">
-            <div class="flex items-center gap-3 pb-3 border-b border-mk-separator/70">
+            <div class="flex items-center gap-3 pb-3 border-b border-mk-separator/70 animate-content-2">
               <Show
                 when={(crawled()?.company_logo_url || job().company_logo_url) && /^https?:\/\//.test(crawled()?.company_logo_url || job().company_logo_url || "")}
                 fallback={
@@ -360,7 +360,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
               </div>
             </div>
 
-            <div>
+            <div class="animate-content-3">
               <p class="text-[13px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2">Description</p>
               <div class="max-w-[68ch] pr-2">
                 <Show
@@ -381,7 +381,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
             </div>
           </div>
 
-          <div class="px-5 py-3 border-t border-mk-separator flex items-center justify-between">
+          <div class="px-5 py-3 border-t border-mk-separator flex items-center justify-between animate-content-4">
             <button
               class="text-[14px] font-medium text-mk-tertiary hover:text-mk-text transition-colors"
               onClick={props.onClose}
