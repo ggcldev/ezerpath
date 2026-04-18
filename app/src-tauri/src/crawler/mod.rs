@@ -12,6 +12,8 @@ use tauri::ipc::Channel;
 
 const BASE_URL: &str = "https://www.onlinejobs.ph/jobseekers/jobsearch";
 const SITE_BASE: &str = "https://www.onlinejobs.ph";
+const BRUNTWORK_SEARCH_URL: &str = "https://www.bruntworkcareers.co/search";
+const BRUNTWORK_SITE_BASE: &str = "https://www.bruntworkcareers.co";
 const CRAWL_DELAY: Duration = Duration::from_secs(5);
 const MAX_PAGES: usize = 5;
 const FETCH_MAX_ATTEMPTS: usize = 3;
@@ -30,6 +32,7 @@ pub struct JobDetailsPayload {
     pub company_logo_url: String,
     pub description: String,
     pub description_html: String,
+    pub job_type: String,
 }
 
 #[derive(Debug)]
@@ -247,6 +250,8 @@ impl Crawler {
             let source_id = row.source_id.unwrap_or_else(|| {
                 url.rsplit('/').next().unwrap_or_default().to_string()
             });
+            let summary = row.summary.map(|s| normalize_text(&s)).unwrap_or_default();
+            let job_type = infer_job_type(&title, &summary);
             jobs.push(Job {
                 id: None,
                 source: "onlinejobs".to_string(),
@@ -260,10 +265,7 @@ impl Crawler {
                 pay: row.pay.map(|s| normalize_text(&s)).unwrap_or_default(),
                 posted_at: row.posted_at.map(|s| normalize_text(&s)).unwrap_or_default(),
                 url,
-                summary: row
-                    .summary
-                    .map(|s| normalize_text(&s))
-                    .unwrap_or_default(),
+                summary,
                 keyword: keyword.to_string(),
                 scraped_at: now.clone(),
                 is_new: true,
@@ -274,6 +276,7 @@ impl Crawler {
                 salary_currency: String::new(),
                 salary_period: String::new(),
                 applied: false,
+                job_type,
             });
         }
         if jobs.is_empty() {
@@ -295,6 +298,8 @@ impl Crawler {
             return None;
         }
         let data = resp.json::<ScraplingDetailsResponse>().await.ok()?;
+        let description = data.description.map(|s| normalize_text(&s)).unwrap_or_default();
+        let job_type = infer_job_type("", &description);
         Some(JobDetailsPayload {
             company: data.company.map(|s| normalize_text(&s)).unwrap_or_default(),
             poster_name: data.poster_name.map(|s| normalize_text(&s)).unwrap_or_default(),
@@ -302,8 +307,9 @@ impl Crawler {
                 .company_logo_url
                 .map(|s| normalize_asset_url(&s))
                 .unwrap_or_default(),
-            description: data.description.map(|s| normalize_text(&s)).unwrap_or_default(),
+            description,
             description_html: data.description_html.unwrap_or_default(),
+            job_type,
         })
     }
 
@@ -312,6 +318,9 @@ impl Crawler {
             return Err("Unsupported job URL".to_string());
         }
         let html = self.fetch_with_retry(url).await?;
+        if url.contains("bruntworkcareers.co") {
+            return parse_bruntwork_job_details(&html);
+        }
         let parsed = parse_job_details(&html)?;
         if is_meaningful_job_details(&parsed) {
             return Ok(parsed);
@@ -322,6 +331,138 @@ impl Crawler {
             }
         }
         Ok(parsed)
+    }
+
+    /// Scrapling fallback for Bruntwork: asks the scrapling service to render
+    /// the Bruntwork search page with a headless browser and return job data.
+    async fn try_scrapling_bruntwork_fallback(&self) -> Option<Vec<Job>> {
+        let base = Self::scrapling_base_url()?;
+        let endpoint = format!("{base}/extract-search");
+        // Send without html so scrapling fetches fresh with a real browser.
+        let payload = ScraplingSearchRequest {
+            url: BRUNTWORK_SEARCH_URL.to_string(),
+            keyword: String::new(),
+            html: None,
+        };
+        let resp = self.client.post(endpoint).json(&payload).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let data = resp.json::<ScraplingSearchResponse>().await.ok()?;
+        let now = Utc::now().to_rfc3339();
+        let mut jobs = Vec::new();
+        for row in data.jobs {
+            let url = row.url.unwrap_or_default();
+            if !url.contains("bruntworkcareers.co/jobs/") { continue; }
+            let title_raw = row.title.unwrap_or_default();
+            if title_raw.trim().is_empty() { continue; }
+            let source_id = url
+                .split("/jobs/").nth(1)
+                .and_then(|s| s.split('/').next())
+                .unwrap_or_default()
+                .to_string();
+            if source_id.is_empty() { continue; }
+            let (title, mut job_type) = split_bruntwork_title_type(&title_raw);
+            if job_type.is_empty() {
+                job_type = infer_job_type(&title, &row.summary.as_deref().unwrap_or(""));
+            }
+            jobs.push(Job {
+                id: None,
+                source: "bruntwork".to_string(),
+                source_id,
+                title,
+                company: "BruntWork".to_string(),
+                company_logo_url: String::new(),
+                pay: String::new(),
+                posted_at: row.posted_at.map(|s| normalize_text(&s)).unwrap_or_default(),
+                url,
+                summary: row.summary.map(|s| normalize_text(&s)).unwrap_or_default(),
+                keyword: String::new(),
+                scraped_at: now.clone(),
+                is_new: true,
+                watchlisted: false,
+                run_id: None,
+                salary_min: None,
+                salary_max: None,
+                salary_currency: String::new(),
+                salary_period: String::new(),
+                applied: false,
+                job_type,
+            });
+        }
+        if jobs.is_empty() { None } else { Some(jobs) }
+    }
+
+    /// Fetch all Bruntwork listings once and store those matching any keyword.
+    /// Non-fatal: if the fetch fails, an empty stats list is returned (onlinejobs
+    /// results are already committed and should not be rolled back).
+    pub async fn crawl_bruntwork(
+        &self,
+        keywords: &[String],
+        db: &Arc<Database>,
+        run_id: i64,
+        on_progress: Option<&Channel<ScanProgress>>,
+    ) -> Vec<CrawlStats> {
+        let html = self.fetch_with_retry(BRUNTWORK_SEARCH_URL).await.ok();
+        let all_jobs = match html.as_deref().map(parse_bruntwork_search) {
+            Some(Ok(jobs)) if !jobs.is_empty() => jobs,
+            _ => {
+                // Plain HTTP returned nothing (JS-rendered page or blocked).
+                // Try scrapling which uses a real headless browser.
+                match self.try_scrapling_bruntwork_fallback().await {
+                    Some(jobs) if !jobs.is_empty() => jobs,
+                    _ => {
+                        let reason = html.as_deref()
+                            .map(|_| "parse returned 0 jobs")
+                            .unwrap_or("fetch failed");
+                        eprintln!("[bruntwork] {reason}, scrapling also empty or disabled");
+                        return Vec::new();
+                    }
+                }
+            }
+        };
+
+        let mut all_stats: Vec<CrawlStats> = Vec::new();
+        for keyword in keywords {
+            let kw_lower = keyword.to_lowercase();
+            let matching: Vec<Job> = all_jobs
+                .iter()
+                .filter(|j| {
+                    let t = j.title.to_lowercase();
+                    // Full keyword match OR any significant word (>3 chars) matches
+                    t.contains(&kw_lower)
+                        || kw_lower
+                            .split_whitespace()
+                            .filter(|w| w.len() > 3)
+                            .any(|w| t.contains(w))
+                })
+                .map(|j| {
+                    let mut j = j.clone();
+                    j.keyword = keyword.clone();
+                    j
+                })
+                .collect();
+
+            let mut stats = CrawlStats { keyword: keyword.clone(), found: 0, new: 0, pages: 1 };
+            for job in &matching {
+                stats.found += 1;
+                match db.insert_job(job, run_id) {
+                    Ok(true) => stats.new += 1,
+                    Ok(false) => {}
+                    Err(err) => eprintln!("[bruntwork] insert_job error: {err}"),
+                }
+            }
+            emit_progress(
+                on_progress,
+                ScanProgress::BruntworkKeyword {
+                    keyword: keyword.clone(),
+                    found: stats.found,
+                    new: stats.new,
+                },
+            );
+            all_stats.push(stats);
+        }
+        all_stats
     }
 }
 
@@ -365,6 +506,11 @@ pub enum ScanProgress {
     Failed {
         run_id: i64,
         error: String,
+    },
+    BruntworkKeyword {
+        keyword: String,
+        found: usize,
+        new: usize,
     },
 }
 
@@ -503,6 +649,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             continue;
         }
 
+        let job_type = infer_job_type(&title, &summary);
         jobs.push(Job {
             id: None,
             source: "onlinejobs".to_string(),
@@ -524,6 +671,7 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             salary_currency: String::new(),
             salary_period: String::new(),
             applied: false,
+            job_type,
         });
     }
 
@@ -555,6 +703,7 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
     let mut company_logo_url = String::new();
     let mut description = String::new();
     let mut description_html = String::new();
+    let mut job_type = String::new();
 
     for script in doc.select(&script_sel) {
         let raw = script.text().collect::<String>();
@@ -569,6 +718,11 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
                 &mut company_logo_url,
                 &mut description,
             );
+            if job_type.is_empty() {
+                if let Some(et) = find_first_key_string(&value, "employmentType") {
+                    job_type = map_employment_type(&et);
+                }
+            }
         }
     }
 
@@ -606,12 +760,17 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
             .unwrap_or_default();
     }
 
+    if job_type.is_empty() {
+        job_type = infer_job_type("", &description);
+    }
+
     Ok(JobDetailsPayload {
         company,
         poster_name,
         company_logo_url,
         description,
         description_html,
+        job_type,
     })
 }
 
@@ -690,6 +849,87 @@ fn find_first_key_string(value: &Value, key: &str) -> Option<String> {
     }
 }
 
+fn map_employment_type(raw: &str) -> String {
+    match raw.to_uppercase().replace('-', "_").as_str() {
+        "FULL_TIME" | "FULLTIME" => "Full-Time".to_string(),
+        "PART_TIME" | "PARTTIME" => "Part-Time".to_string(),
+        "CONTRACTOR" | "CONTRACT" | "FREELANCE" => "Contract".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn infer_job_type(title: &str, text: &str) -> String {
+    let combined = format!("{} {}", title, text).to_lowercase();
+    let full = combined.contains("full-time")
+        || combined.contains("full time")
+        || combined.contains("fulltime");
+    let part = combined.contains("part-time")
+        || combined.contains("part time")
+        || combined.contains("parttime");
+    let hours = extract_weekly_hours(&combined);
+    match (full, part) {
+        (true, _) => match hours {
+            Some(h) => format!("Full-Time ({} hrs/wk)", h),
+            None => "Full-Time".to_string(),
+        },
+        (false, true) => match hours {
+            Some(h) => format!("Part-Time ({} hrs/wk)", h),
+            None => "Part-Time".to_string(),
+        },
+        (false, false) => match hours {
+            Some(h) if h >= 35 => format!("Full-Time ({} hrs/wk)", h),
+            Some(h) => format!("Part-Time ({} hrs/wk)", h),
+            None => String::new(),
+        },
+    }
+}
+
+fn extract_weekly_hours(text: &str) -> Option<u32> {
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        if ch.is_ascii_digit() {
+            let start = i;
+            let mut end = i + ch.len_utf8();
+            while let Some(&(j, c)) = chars.peek() {
+                if c.is_ascii_digit() {
+                    end = j + c.len_utf8();
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if let Ok(n) = text[start..end].parse::<u32>() {
+                if n >= 1 && n <= 80 {
+                    let rest = text[end..].trim_start_matches(|c: char| c == ' ' || c == '-');
+                    if rest.starts_with("hours/week")
+                        || rest.starts_with("hours per week")
+                        || rest.starts_with("hours a week")
+                        || rest.starts_with("hours weekly")
+                        || rest.starts_with("hrs/week")
+                        || rest.starts_with("hrs per week")
+                        || rest.starts_with("hrs a week")
+                        || rest.starts_with("hrs weekly")
+                        || rest.starts_with("h/week")
+                        || rest.starts_with("h/wk")
+                        || rest.starts_with("hours/wk")
+                        || rest.starts_with("hrs/wk")
+                    {
+                        return Some(n);
+                    }
+                    if rest.starts_with("hour") || rest.starts_with("hr") {
+                        let after = rest.trim_start_matches(|c: char| c.is_alphabetic() || c == '-' || c == '/');
+                        let after = after.trim_start_matches(' ');
+                        if after.starts_with("week") || after.starts_with("wk") || after.starts_with("per") {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn extract_best_text(doc: &Html, selector: &Selector) -> String {
     doc.select(selector)
         .map(|e| normalize_text(&e.text().collect::<String>()))
@@ -734,6 +974,7 @@ fn is_allowed_job_url(url: &str) -> bool {
     matches!(
         parsed.host_str(),
         Some("onlinejobs.ph") | Some("www.onlinejobs.ph")
+            | Some("bruntworkcareers.co") | Some("www.bruntworkcareers.co")
     )
 }
 
@@ -853,6 +1094,230 @@ pub(crate) fn posted_at_days_ago(posted_at: &str, now: &chrono::DateTime<Utc>) -
     None
 }
 
+// ── Bruntwork Careers ────────────────────────────────────────────────────────
+
+fn parse_bruntwork_search(html: &str) -> Result<Vec<Job>, String> {
+    let now = Utc::now().to_rfc3339();
+    if let Some(jobs) = try_parse_bruntwork_next_data(html, &now) {
+        if !jobs.is_empty() {
+            return Ok(jobs);
+        }
+    }
+    parse_bruntwork_search_html(html, &now)
+}
+
+fn try_parse_bruntwork_next_data(html: &str, now: &str) -> Option<Vec<Job>> {
+    let doc = Html::parse_document(html);
+    let script_sel = Selector::parse("script#__NEXT_DATA__").ok()?;
+    let script = doc.select(&script_sel).next()?;
+    let raw = script.text().collect::<String>();
+    let value: Value = serde_json::from_str(&raw).ok()?;
+
+    let jobs_val = find_first_key(&value, "jobs")?.as_array()?.to_owned();
+    if jobs_val.is_empty() {
+        return None;
+    }
+
+    let mut jobs = Vec::new();
+    for item in &jobs_val {
+        let id = item
+            .get("id").or_else(|| item.get("jobId")).or_else(|| item.get("sourceId"))
+            .and_then(|v| v.as_str().map(|s| s.to_string())
+                .or_else(|| v.as_i64().map(|n| n.to_string())))
+            .unwrap_or_default();
+        if id.is_empty() { continue; }
+
+        let title = item
+            .get("title").or_else(|| item.get("jobTitle"))
+            .and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        if title.is_empty() { continue; }
+
+        let raw_type = item
+            .get("jobType").or_else(|| item.get("job_type")).or_else(|| item.get("type"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let job_type = map_bruntwork_job_type(&raw_type);
+
+        let posted_at = item
+            .get("publishedOn").or_else(|| item.get("published_on")).or_else(|| item.get("createdAt"))
+            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        let url = format!("{BRUNTWORK_SITE_BASE}/jobs/{id}");
+        jobs.push(Job {
+            id: None,
+            source: "bruntwork".to_string(),
+            source_id: id,
+            title,
+            company: "BruntWork".to_string(),
+            company_logo_url: String::new(),
+            pay: String::new(),
+            posted_at,
+            url,
+            summary: String::new(),
+            keyword: String::new(),
+            scraped_at: now.to_string(),
+            is_new: true,
+            watchlisted: false,
+            run_id: None,
+            salary_min: None,
+            salary_max: None,
+            salary_currency: String::new(),
+            salary_period: String::new(),
+            applied: false,
+            job_type,
+        });
+    }
+    if jobs.is_empty() { None } else { Some(jobs) }
+}
+
+fn parse_bruntwork_search_html(html: &str, now: &str) -> Result<Vec<Job>, String> {
+    let doc = Html::parse_document(html);
+    let link_sel = Selector::parse("a[href*='/jobs/']").map_err(|e| e.to_string())?;
+
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut jobs = Vec::new();
+
+    for link in doc.select(&link_sel) {
+        let href = link.value().attr("href").unwrap_or_default();
+        // Skip apply links
+        if href.contains("/apply") { continue; }
+
+        let id = href
+            .split("/jobs/").nth(1)
+            .and_then(|s| s.split('/').next())
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or_default()
+            .to_string();
+        if id.is_empty() || seen_ids.contains(&id) { continue; }
+
+        let text = normalize_text(&link.text().collect::<String>());
+        let (title, job_type) = split_bruntwork_title_type(&text);
+        if title.is_empty() { continue; }
+
+        seen_ids.insert(id.clone());
+        let url = format!("{BRUNTWORK_SITE_BASE}/jobs/{id}");
+        jobs.push(Job {
+            id: None,
+            source: "bruntwork".to_string(),
+            source_id: id,
+            title,
+            company: "BruntWork".to_string(),
+            company_logo_url: String::new(),
+            pay: String::new(),
+            posted_at: String::new(),
+            url,
+            summary: String::new(),
+            keyword: String::new(),
+            scraped_at: now.to_string(),
+            is_new: true,
+            watchlisted: false,
+            run_id: None,
+            salary_min: None,
+            salary_max: None,
+            salary_currency: String::new(),
+            salary_period: String::new(),
+            applied: false,
+            job_type,
+        });
+    }
+    Ok(jobs)
+}
+
+fn split_bruntwork_title_type(combined: &str) -> (String, String) {
+    for marker in &["Full Time", "Part Time", "Project Based"] {
+        if let Some(pos) = combined.find(marker) {
+            let title = combined[..pos].trim().to_string();
+            let raw_type = combined[pos..].trim().to_string();
+            if !title.is_empty() {
+                return (title, map_bruntwork_job_type(&raw_type));
+            }
+        }
+    }
+    (combined.trim().to_string(), String::new())
+}
+
+fn map_bruntwork_job_type(raw: &str) -> String {
+    let r = raw.trim();
+    if r.starts_with("Full Time") || r.starts_with("Full-Time") {
+        "Full-Time".to_string()
+    } else if r.starts_with("Part Time") || r.starts_with("Part-Time") {
+        if let Some(hrs) = extract_bruntwork_hour_range(r) {
+            format!("Part-Time ({hrs} hrs/wk)")
+        } else {
+            "Part-Time".to_string()
+        }
+    } else if r.starts_with("Project Based") || r.starts_with("Project-Based") {
+        "Contract".to_string()
+    } else if !r.is_empty() {
+        r.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// "Part Time (20 - 34 Hours per week)" → Some("20-34")
+/// "Part Time (10-19 Hours)"             → Some("10-19")
+fn extract_bruntwork_hour_range(s: &str) -> Option<String> {
+    let start = s.find('(')?;
+    let end = s.find(')')?;
+    let inner = s[start + 1..end].trim();
+    let parts: Vec<&str> = inner.split_whitespace().collect();
+    match parts.as_slice() {
+        [a, "-", b, ..] => Some(format!("{a}-{b}")),
+        [a, ..] if a.contains('-') => Some(a.to_string()),
+        [a, ..] => Some(a.to_string()),
+        _ => None,
+    }
+}
+
+fn parse_bruntwork_job_details(html: &str) -> Result<JobDetailsPayload, String> {
+    // Try __NEXT_DATA__ first (most reliable on Next.js sites)
+    if let Some(payload) = try_parse_bruntwork_details_next_data(html) {
+        if is_meaningful_job_details(&payload) {
+            return Ok(payload);
+        }
+    }
+    // Fall back to generic HTML parser
+    let mut payload = parse_job_details(html)?;
+    // Override company to always be BruntWork
+    if payload.company.is_empty() {
+        payload.company = "BruntWork".to_string();
+    }
+    Ok(payload)
+}
+
+fn try_parse_bruntwork_details_next_data(html: &str) -> Option<JobDetailsPayload> {
+    let doc = Html::parse_document(html);
+    let script_sel = Selector::parse("script#__NEXT_DATA__").ok()?;
+    let script = doc.select(&script_sel).next()?;
+    let raw = script.text().collect::<String>();
+    let value: Value = serde_json::from_str(&raw).ok()?;
+
+    let description = find_first_key_string(&value, "description")
+        .map(|s| normalize_text(&s))
+        .unwrap_or_default();
+    if description.is_empty() {
+        return None;
+    }
+
+    let raw_type = find_first_key_string(&value, "jobType")
+        .or_else(|| find_first_key_string(&value, "job_type"))
+        .unwrap_or_default();
+    let job_type = if raw_type.is_empty() {
+        infer_job_type("", &description)
+    } else {
+        map_bruntwork_job_type(&raw_type)
+    };
+
+    Some(JobDetailsPayload {
+        company: "BruntWork".to_string(),
+        poster_name: String::new(),
+        company_logo_url: String::new(),
+        description,
+        description_html: String::new(),
+        job_type,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_allowed_job_url, posted_at_days_ago};
@@ -862,6 +1327,8 @@ mod tests {
     fn allows_only_https_onlinejobs_hosts() {
         assert!(is_allowed_job_url("https://www.onlinejobs.ph/jobseekers/job/123"));
         assert!(is_allowed_job_url("https://onlinejobs.ph/jobseekers/job/123"));
+        assert!(is_allowed_job_url("https://www.bruntworkcareers.co/jobs/51936545689"));
+        assert!(is_allowed_job_url("https://bruntworkcareers.co/jobs/51936545689"));
         assert!(!is_allowed_job_url("http://www.onlinejobs.ph/jobseekers/job/123"));
         assert!(!is_allowed_job_url("https://evil.example.com/jobseekers/job/123"));
         assert!(!is_allowed_job_url("javascript:alert(1)"));
