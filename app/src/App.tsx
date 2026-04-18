@@ -388,7 +388,6 @@ function App() {
               runs={runs}
               crawling={crawling()}
               onToggleWatchlist={handleToggleWatchlist}
-              onToggleApplied={handleToggleApplied}
             />
           </Match>
           <Match when={view() === "watchlist"}>

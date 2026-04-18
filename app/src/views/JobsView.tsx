@@ -1,7 +1,6 @@
 import { createSignal, createMemo, For, Show, Resource, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Check } from "lucide-solid";
 import type { ScanRun } from "../components/Sidebar";
 import AnimatedNumber from "../components/AnimatedNumber";
 import JobDetailsDrawer from "../components/JobDetailsDrawer";
@@ -33,7 +32,6 @@ interface JobsViewProps {
   runs: Resource<ScanRun[]>;
   crawling: boolean;
   onToggleWatchlist: (jobId: number) => void;
-  onToggleApplied: (jobId: number) => void;
 }
 
 type PayRangeKey = "all" | "lt5" | "5_8" | "8_11" | "11_15" | "15_plus" | "unspecified";
@@ -47,8 +45,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["", "", "Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [24, 26, 86, 330, 110, 80, 100, 56];
+const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
+const DEFAULT_WIDTHS = [96, 340, 110, 80, 100, 56];
 const STAR_W = 32;
 const GROUP_INDENT_W = 14;
 const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
@@ -458,30 +456,20 @@ export default function JobsView(props: JobsViewProps) {
                               <tr
                                 class={`table-row cursor-pointer border-b border-mk-separator/50 hover:bg-mk-row-hover ${
                                   rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
-                                } ${job.applied ? "opacity-50" : ""}`}
+                                }`}
                                 onClick={() => setSelectedJob(job)}
                                 onMouseEnter={(e) => rowHoverEnter(e.currentTarget)}
                                 onMouseLeave={(e) => rowHoverLeave(e.currentTarget)}
                               >
-                                <td class={`text-center py-2.5 ${selectedKeyword() === null ? "pl-3" : ""}`}>
+                                <td
+                                  class={`text-center py-2.5 cursor-default ${selectedKeyword() === null ? "pl-3" : ""}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
                                   <button
                                     class={`text-[15px] leading-none transition-colors ${job.watchlisted ? "text-mk-yellow" : "text-mk-tertiary hover:text-mk-yellow"}`}
                                     aria-label={job.watchlisted ? "Remove from watchlist" : "Add to watchlist"}
                                     onClick={(e) => { e.stopPropagation(); props.onToggleWatchlist(job.id); }}
                                   >{job.watchlisted ? "\u2605" : "\u2606"}</button>
-                                </td>
-                                <td class="text-center py-2.5 px-1">
-                                  <button
-                                    class={`flex items-center justify-center w-[18px] h-[18px] mx-auto rounded-[4px] border transition-all ${
-                                      job.applied
-                                        ? "bg-mk-green border-mk-green text-[#121212]"
-                                        : "bg-transparent border-mk-tertiary/50 text-transparent hover:border-mk-green hover:text-mk-green/50"
-                                    }`}
-                                    title={job.applied ? "Applied" : "Mark as applied"}
-                                    onClick={(e) => { e.stopPropagation(); props.onToggleApplied(job.id); }}
-                                  >
-                                    <Check size={12} strokeWidth={3.5} />
-                                  </button>
                                 </td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden">

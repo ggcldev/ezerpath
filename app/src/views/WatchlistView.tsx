@@ -38,8 +38,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["", "", "Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [24, 26, 86, 330, 110, 80, 100, 56];
+const COLS = ["", "Posted", "Title", "Keyword", "Source", "Pay", "Link"];
+const DEFAULT_WIDTHS = [26, 86, 330, 110, 80, 100, 56];
 const STAR_W = 32;
 
 export default function WatchlistView(props: WatchlistViewProps) {
@@ -188,37 +188,43 @@ export default function WatchlistView(props: WatchlistViewProps) {
                       <tr
                         class={`table-row cursor-pointer border-b border-mk-separator/50 hover:bg-mk-row-hover ${
                           rowIndex() % 2 === 1 ? "bg-mk-row-alt" : ""
-                        } ${job.applied ? "opacity-50" : ""}`}
+                        }`}
                         onClick={() => setSelectedJob(job)}
                         onMouseEnter={(e) => rowHoverEnter(e.currentTarget)}
                         onMouseLeave={(e) => rowHoverLeave(e.currentTarget)}
                       >
-                        <td class="text-center py-2.5">
+                        <td
+                          class={`text-center py-2.5 cursor-default ${job.applied ? "opacity-40 grayscale" : ""}`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <button
                             class="text-[15px] leading-none text-mk-yellow hover:opacity-80 transition-opacity"
                             aria-label="Remove from watchlist"
                             onClick={(e) => { e.stopPropagation(); props.onToggleWatchlist(job.id); }}
                           >{"\u2605"}</button>
                         </td>
-                        <td class="text-center py-2.5 px-1">
+                        <td
+                          class="text-center py-2.5 px-1 cursor-default"
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <button
-                            class={`flex items-center justify-center w-[18px] h-[18px] mx-auto rounded-[4px] border transition-all ${
+                            class={`flex items-center justify-center w-[16px] h-[16px] mx-auto rounded-full border-[1.5px] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-110 active:scale-50 ${
                               job.applied
                                 ? "bg-mk-green border-mk-green text-[#121212]"
-                                : "bg-transparent border-mk-tertiary/50 text-transparent hover:border-mk-green hover:text-mk-green/50"
+                                : "bg-transparent border-mk-tertiary/40 text-transparent hover:border-mk-green/80 hover:bg-mk-green/10 hover:text-mk-green/60"
                             }`}
                             title={job.applied ? "Applied" : "Mark as applied"}
                             onClick={(e) => { e.stopPropagation(); props.onToggleApplied(job.id); }}
                           >
-                            <Check size={12} strokeWidth={3.5} />
+                            <Check size={10} strokeWidth={3.5} />
                           </button>
                         </td>
-                        <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
-                        <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>
-                        <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
-                        <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
-                        <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                        <td class="px-2 py-2.5 overflow-hidden">
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}>
                           <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={(e) => { e.stopPropagation(); openUrl(job.url); }}>Open</button>
                         </td>
                       </tr>
