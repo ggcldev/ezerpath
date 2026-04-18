@@ -47,8 +47,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Type", "Link"];
-const DEFAULT_WIDTHS = [96, 340, 110, 80, 100, 90, 56];
+const COLS = ["Posted", "Title", "Source", "Pay", "Schedule", "Link"];
+const DEFAULT_WIDTHS = [96, 340, 80, 100, 90, 56];
 const STAR_W = 32;
 const GROUP_INDENT_W = 14;
 const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
@@ -107,13 +107,16 @@ export default function JobsView(props: JobsViewProps) {
   const [selectedPayRange, setSelectedPayRange] = createSignal<PayRangeKey>("all");
   const [selectedScanScope, setSelectedScanScope] = createSignal<ScanScopeKey>("all");
   const [selectedSource, setSelectedSource] = createSignal<string | null>(null);
+  const [selectedSchedule, setSelectedSchedule] = createSignal<string | null>(null);
   const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
   const [selectedJob, setSelectedJob] = createSignal<Job | null>(null);
 
   let headerEl!: HTMLDivElement;
+  let headerRowEl!: HTMLDivElement;
+  let tableEl!: HTMLTableElement;
   let bodyEl!: HTMLDivElement;
   let viewEl!: HTMLDivElement;
-  let drag = { active: false, i: 0, startX: 0, startW: 0 };
+  let drag = { active: false, i: 0, startX: 0, startW: 0, currentW: 0 };
 
   const leadColWidth = () => STAR_W + (selectedKeyword() === null ? GROUP_INDENT_W : 0);
   const totalWidth = () => widths().reduce((a, b) => a + b, 0) + leadColWidth();
@@ -122,11 +125,13 @@ export default function JobsView(props: JobsViewProps) {
 
   const onMove = (e: MouseEvent) => {
     if (!drag.active) return;
-    setWidths((prev) => {
-      const next = [...prev];
-      next[drag.i] = Math.max(50, drag.startW + e.clientX - drag.startX);
-      return next;
-    });
+    const newW = Math.max(50, drag.startW + e.clientX - drag.startX);
+    drag.currentW = newW;
+    // Direct DOM — updates header and colgroup in the same frame, no reactive lag
+    const headerCol = headerRowEl?.children[drag.i + 1] as HTMLElement | undefined;
+    if (headerCol) { headerCol.style.width = `${newW}px`; headerCol.style.minWidth = `${newW}px`; }
+    const col = tableEl?.querySelector<HTMLElement>(`colgroup col:nth-child(${drag.i + 2})`);
+    if (col) col.style.width = `${newW}px`;
   };
   const onUp = () => {
     drag.active = false;
@@ -134,6 +139,8 @@ export default function JobsView(props: JobsViewProps) {
     document.removeEventListener("mouseup", onUp);
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    // Commit final width to reactive state
+    setWidths((prev) => { const next = [...prev]; next[drag.i] = drag.currentW; return next; });
   };
   onCleanup(() => {
     document.removeEventListener("mousemove", onMove);
@@ -142,12 +149,21 @@ export default function JobsView(props: JobsViewProps) {
   const startResize = (i: number, e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    drag = { active: true, i, startX: e.clientX, startW: widths()[i] };
+    drag = { active: true, i, startX: e.clientX, startW: widths()[i], currentW: widths()[i] };
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   };
+
+  const scheduleList = createMemo(() => {
+    const list = props.jobs() || [];
+    const map = new Map<string, number>();
+    for (const job of list) {
+      if (job.job_type) map.set(job.job_type, (map.get(job.job_type) ?? 0) + 1);
+    }
+    return [...map.entries()].map(([schedule, count]) => ({ schedule, count })).sort((a, b) => b.count - a.count);
+  });
 
   const sourceLabel = (src: string) =>
     src === "onlinejobs" ? "OnlineJobs.ph"
@@ -215,12 +231,14 @@ export default function JobsView(props: JobsViewProps) {
     const runId = latestRunId();
 
     const src = selectedSource();
+    const sched = selectedSchedule();
     const baseByScope = filterJobsByScope(list, scanScope, runId);
     const baseBySource = src ? baseByScope.filter((j) => j.source === src) : baseByScope;
     const baseByKeyword = kw ? baseBySource.filter((j) => (j.keyword || "Other") === kw) : baseBySource;
+    const baseBySchedule = sched ? baseByKeyword.filter((j) => j.job_type === sched) : baseByKeyword;
     const base = payRange === "all"
-      ? baseByKeyword
-      : baseByKeyword.filter((j) => getPayRangeKey(j.pay) === payRange);
+      ? baseBySchedule
+      : baseBySchedule.filter((j) => getPayRangeKey(j.pay) === payRange);
     const searched = base;
 
     if (kw) {
@@ -394,6 +412,37 @@ export default function JobsView(props: JobsViewProps) {
             </For>
           </div>
 
+          {/* Schedule */}
+          <div class="mt-3 pt-3 border-t border-mk-separator">
+            <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Schedule</p>
+            <button
+              class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                selectedSchedule() === null
+                  ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                  : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+              }`}
+              onClick={() => setSelectedSchedule(null)}
+            >
+              <span class="text-[12px] font-medium truncate">All</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{(props.jobs() || []).length}</span>
+            </button>
+            <For each={scheduleList()}>
+              {(item) => (
+                <button
+                  class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                    selectedSchedule() === item.schedule
+                      ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                      : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+                  }`}
+                  onClick={() => setSelectedSchedule(selectedSchedule() === item.schedule ? null : item.schedule)}
+                >
+                  <span class="text-[12px] truncate">{item.schedule}</span>
+                  <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{item.count}</span>
+                </button>
+              )}
+            </For>
+          </div>
+
           {/* Sources */}
           <div class="mt-3 pt-3 border-t border-mk-separator">
             <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Sources</p>
@@ -434,7 +483,7 @@ export default function JobsView(props: JobsViewProps) {
 
           {/* Fixed header */}
           <div ref={headerEl!} class="shrink-0 min-w-0 overflow-hidden px-3 sm:px-5 pt-1" style={{ background: "var(--mk-bg)" }}>
-            <div class="flex items-center border-b border-mk-separator pb-1" style={{ width: stretchedWidth() }}>
+            <div ref={headerRowEl!} class="flex items-center border-b border-mk-separator pb-1" style={{ width: stretchedWidth() }}>
               <div style={{ width: `${leadColWidth()}px`, "min-width": `${leadColWidth()}px` }} />
               <For each={COLS}>
                 {(label, getI) => (
@@ -464,7 +513,7 @@ export default function JobsView(props: JobsViewProps) {
 
           {/* Scrollable body */}
           <div ref={bodyEl!} class="flex-1 min-w-0 overflow-auto px-3 sm:px-5" onScroll={onBodyScroll}>
-            <table style={{ "table-layout": "fixed", "border-collapse": "collapse", width: stretchedWidth() }}>
+            <table ref={tableEl!} style={{ "table-layout": "fixed", "border-collapse": "collapse", width: stretchedWidth() }}>
               <colgroup>
                 <col style={{ width: `${leadColWidth()}px` }} />
                 <For each={widths()}>
@@ -476,11 +525,11 @@ export default function JobsView(props: JobsViewProps) {
               <tbody>
                 <Show
                   when={!props.jobs.loading || hasRows()}
-                  fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
+                  fallback={<tr><td colspan="6" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
                 >
                   <Show
                     when={totalCount() > 0}
-                    fallback={<tr><td colspan="7" class="text-center py-16 text-[13px] text-mk-tertiary">No jobs yet</td></tr>}
+                    fallback={<tr><td colspan="6" class="text-center py-16 text-[13px] text-mk-tertiary">No jobs yet</td></tr>}
                   >
                     <For each={visibleJobs()}>
                       {(group) => (
@@ -488,7 +537,7 @@ export default function JobsView(props: JobsViewProps) {
                           {/* Group header — only shown when viewing All */}
                           <Show when={selectedKeyword() === null}>
                             <tr>
-                              <td colspan="7" style={{ padding: "0" }}>
+                              <td colspan="6" style={{ padding: "0" }}>
                                 <div class="flex items-center gap-2 px-2 pt-4 pb-2" style={{ width: stretchedWidth() }}>
                                   <span class="text-[11px] font-semibold uppercase tracking-widest text-mk-cyan">{group.keyword}</span>
                                   <span class="text-[11px] text-mk-tertiary">{group.jobs.length}</span>
@@ -517,21 +566,16 @@ export default function JobsView(props: JobsViewProps) {
                                     onClick={(e) => { e.stopPropagation(); props.onToggleWatchlist(job.id); }}
                                   >{job.watchlisted ? "\u2605" : "\u2606"}</button>
                                 </td>
-                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
-                                <td class="px-2 py-2.5 overflow-hidden">
+                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[12px] text-mk-secondary">{formatDate(job.posted_at)}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}>
                                   <span class="block truncate text-[13px] font-medium text-mk-text">
                                     {job.title}
                                     <Show when={job.is_new}><span class="ml-1.5 px-1 py-px rounded text-[9px] font-bold bg-mk-green-dim text-mk-green">NEW</span></Show>
                                   </span>
                                 </td>
-                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
-                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
-                                <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
-                                <td class="px-2 py-2.5 overflow-hidden">
-                                  <Show when={job.job_type} fallback={<span class="text-mk-tertiary text-[11px]">-</span>}>
-                                    <span class={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${job.job_type.toLowerCase().includes("full") ? "bg-blue-500/15 text-blue-400 border border-blue-500/30" : job.job_type.toLowerCase().includes("part") ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "bg-mk-fill text-mk-secondary border border-mk-separator"}`}>{job.job_type}</span>
-                                  </Show>
-                                </td>
+                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[12px] text-mk-secondary">{job.job_type || "-"}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden">
                                   <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={(e) => { e.stopPropagation(); openUrl(job.url); }}>Open</button>
                                 </td>
