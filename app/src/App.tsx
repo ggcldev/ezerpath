@@ -28,6 +28,7 @@ interface Job {
   watchlisted: boolean;
   run_id: number | null;
   applied: boolean;
+  job_type: string;
 }
 
 interface CrawlStats {
@@ -82,6 +83,7 @@ function App() {
   const [version, setVersion] = createSignal(0);
   const [dark, setDark] = createSignal(true);
   const [dateRange, setDateRange] = createSignal<number>(3);
+  const [enabledSources, setEnabledSources] = createSignal<string[]>(["onlinejobs", "bruntwork"]);
   const [globalError, setGlobalError] = createSignal("");
   const [confirmDialog, setConfirmDialog] = createSignal<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = createSignal(false);
@@ -378,6 +380,8 @@ function App() {
               keywords={keywords}
               dateRange={dateRange}
               setDateRange={setDateRange}
+              enabledSources={enabledSources}
+              setEnabledSources={setEnabledSources}
               onScanStart={handleScanStart}
               onScanComplete={() => { bump(); refetchKeywords(); refetchRuns(); }}
             />
@@ -387,6 +391,7 @@ function App() {
               jobs={jobs}
               runs={runs}
               crawling={crawling()}
+              enabledSources={enabledSources}
               onToggleWatchlist={handleToggleWatchlist}
             />
           </Match>

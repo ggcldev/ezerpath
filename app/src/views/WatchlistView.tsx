@@ -22,6 +22,7 @@ interface Job {
   is_new: boolean;
   watchlisted: boolean;
   applied: boolean;
+  job_type: string;
 }
 
 interface WatchlistViewProps {
@@ -38,8 +39,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["", "Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [26, 86, 330, 110, 80, 100, 56];
+const COLS = ["", "Posted", "Title", "Keyword", "Source", "Pay", "Type", "Link"];
+const DEFAULT_WIDTHS = [26, 86, 330, 110, 80, 100, 90, 56];
 const STAR_W = 32;
 
 export default function WatchlistView(props: WatchlistViewProps) {
@@ -99,7 +100,8 @@ export default function WatchlistView(props: WatchlistViewProps) {
     try {
       const parsed = new URL(rawUrl);
       if (parsed.protocol !== "https:") return;
-      if (!["onlinejobs.ph", "www.onlinejobs.ph"].includes(parsed.hostname)) return;
+      const allowedHosts = ["onlinejobs.ph", "www.onlinejobs.ph", "bruntworkcareers.co", "www.bruntworkcareers.co"];
+      if (!allowedHosts.includes(parsed.hostname)) return;
       invoke("plugin:opener|open_url", { url: parsed.toString() });
     } catch {
       // Ignore invalid URLs.
@@ -224,6 +226,11 @@ export default function WatchlistView(props: WatchlistViewProps) {
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}>
+                          <Show when={job.job_type} fallback={<span class="text-mk-tertiary text-[11px]">-</span>}>
+                            <span class={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${job.job_type.toLowerCase().includes("full") ? "bg-blue-500/15 text-blue-400 border border-blue-500/30" : job.job_type.toLowerCase().includes("part") ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "bg-mk-fill text-mk-secondary border border-mk-separator"}`}>{job.job_type}</span>
+                          </Show>
+                        </td>
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}>
                           <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={(e) => { e.stopPropagation(); openUrl(job.url); }}>Open</button>
                         </td>

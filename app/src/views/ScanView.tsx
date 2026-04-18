@@ -22,7 +22,8 @@ type ScanProgress =
   | { kind: "page"; keyword: string; page: number; found: number }
   | { kind: "keyword_completed"; keyword: string; found: number; new: number; pages: number }
   | { kind: "completed"; run_id: number; total_found: number; total_new: number }
-  | { kind: "failed"; run_id: number; error: string };
+  | { kind: "failed"; run_id: number; error: string }
+  | { kind: "bruntwork_keyword"; keyword: string; found: number; new: number };
 
 interface ProgressSnapshot {
   totalKeywords: number;
@@ -43,6 +44,8 @@ interface ScanViewProps {
   keywords: Resource<string[]>;
   dateRange: Accessor<number>;
   setDateRange: Setter<number>;
+  enabledSources: Accessor<string[]>;
+  setEnabledSources: (v: string[]) => void;
   onScanStart: () => void;
   onScanComplete: () => void;
 }
@@ -115,6 +118,13 @@ export default function ScanView(props: ScanViewProps) {
             prev ? { ...prev, currentPage: msg.pages, liveFound, liveNew } : prev
           );
           break;
+        case "bruntwork_keyword":
+          liveFound += msg.found;
+          liveNew += msg.new;
+          setProgress((prev) =>
+            prev ? { ...prev, liveFound, liveNew } : prev
+          );
+          break;
         case "completed":
           setProgress((prev) =>
             prev
@@ -137,6 +147,7 @@ export default function ScanView(props: ScanViewProps) {
     try {
       const stats = await invoke<CrawlStats[]>("crawl_jobs", {
         days: props.dateRange(),
+        sources: props.enabledSources(),
         onProgress: channel,
       });
       props.setCrawlResult(stats);
@@ -274,6 +285,49 @@ export default function ScanView(props: ScanViewProps) {
             </p>
           </div>
 
+          {/* Sources */}
+          <div class="app-surface p-4 sm:p-4 mb-6">
+            <label class="block text-[11px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2.5">Sources</label>
+            <div class="flex flex-col gap-2.5">
+              {([
+                { id: "onlinejobs", label: "OnlineJobs.ph", dot: "bg-mk-green" },
+                { id: "bruntwork", label: "BruntWork Careers", dot: "bg-mk-cyan" },
+              ] as const).map(({ id, label, dot }) => {
+                const checked = () => props.enabledSources().includes(id);
+                const toggle = () => {
+                  if (checked()) {
+                    props.setEnabledSources(props.enabledSources().filter((s) => s !== id));
+                  } else {
+                    props.setEnabledSources([...props.enabledSources(), id]);
+                  }
+                };
+                return (
+                  <button
+                    type="button"
+                    onClick={toggle}
+                    class={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all text-left ${
+                      checked()
+                        ? "border-mk-separator bg-mk-fill"
+                        : "border-mk-separator/50 bg-transparent opacity-50"
+                    }`}
+                  >
+                    <span class={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-colors ${
+                      checked() ? "bg-mk-green border-mk-green" : "border-mk-separator bg-mk-fill"
+                    }`}>
+                      <Show when={checked()}>
+                        <svg class="w-2.5 h-2.5" viewBox="0 0 10 8" fill="none">
+                          <path d="M1 4l3 3 5-6" stroke="var(--mk-sidebar)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      </Show>
+                    </span>
+                    <span class={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+                    <span class="text-[13px] text-mk-secondary">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Scan button */}
           <div class="mb-6">
             <button
@@ -314,7 +368,7 @@ export default function ScanView(props: ScanViewProps) {
                     </Show>
                   </p>
                   <p class="text-[11px] text-mk-tertiary mt-0.5">
-                    <Show when={progress()} fallback="Connecting to OnlineJobs.ph…">
+                    <Show when={progress()} fallback="Connecting to sources…">
                       {(p) => (
                         <>
                           Keyword {Math.min(p().keywordIndex + 1, p().totalKeywords)}/{p().totalKeywords}

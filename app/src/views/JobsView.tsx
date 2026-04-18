@@ -1,4 +1,4 @@
-import { createSignal, createMemo, For, Show, Resource, onCleanup, onMount } from "solid-js";
+import { createSignal, createMemo, For, Show, Resource, Accessor, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
@@ -25,12 +25,14 @@ interface Job {
   watchlisted: boolean;
   run_id: number | null;
   applied: boolean;
+  job_type: string;
 }
 
 interface JobsViewProps {
   jobs: Resource<Job[]>;
   runs: Resource<ScanRun[]>;
   crawling: boolean;
+  enabledSources: Accessor<string[]>;
   onToggleWatchlist: (jobId: number) => void;
 }
 
@@ -45,8 +47,8 @@ function formatDate(raw: string): string {
   return `${m}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
 }
 
-const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Link"];
-const DEFAULT_WIDTHS = [96, 340, 110, 80, 100, 56];
+const COLS = ["Posted", "Title", "Keyword", "Source", "Pay", "Type", "Link"];
+const DEFAULT_WIDTHS = [96, 340, 110, 80, 100, 90, 56];
 const STAR_W = 32;
 const GROUP_INDENT_W = 14;
 const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
@@ -104,6 +106,7 @@ export default function JobsView(props: JobsViewProps) {
   const [selectedKeyword, setSelectedKeyword] = createSignal<string | null>(null);
   const [selectedPayRange, setSelectedPayRange] = createSignal<PayRangeKey>("all");
   const [selectedScanScope, setSelectedScanScope] = createSignal<ScanScopeKey>("all");
+  const [selectedSource, setSelectedSource] = createSignal<string | null>(null);
   const [widths, setWidths] = createSignal<number[]>([...DEFAULT_WIDTHS]);
   const [selectedJob, setSelectedJob] = createSignal<Job | null>(null);
 
@@ -145,6 +148,23 @@ export default function JobsView(props: JobsViewProps) {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   };
+
+  const sourceLabel = (src: string) =>
+    src === "onlinejobs" ? "OnlineJobs.ph"
+    : src === "bruntwork" ? "BruntWork Careers"
+    : src;
+  const sourceDotClass = (src: string) =>
+    src === "bruntwork" ? "bg-mk-cyan" : "bg-mk-green";
+
+  const sourceList = createMemo(() => {
+    const list = props.jobs() || [];
+    const enabled = props.enabledSources();
+    const map = new Map<string, number>();
+    for (const job of list) {
+      if (enabled.includes(job.source)) map.set(job.source, (map.get(job.source) ?? 0) + 1);
+    }
+    return [...map.entries()].map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count);
+  });
 
   // Keyword list derived from ALL jobs (not filtered), so panel always shows everything
   const keywordList = createMemo(() => {
@@ -194,8 +214,10 @@ export default function JobsView(props: JobsViewProps) {
     const scanScope = selectedScanScope();
     const runId = latestRunId();
 
+    const src = selectedSource();
     const baseByScope = filterJobsByScope(list, scanScope, runId);
-    const baseByKeyword = kw ? baseByScope.filter((j) => (j.keyword || "Other") === kw) : baseByScope;
+    const baseBySource = src ? baseByScope.filter((j) => j.source === src) : baseByScope;
+    const baseByKeyword = kw ? baseBySource.filter((j) => (j.keyword || "Other") === kw) : baseBySource;
     const base = payRange === "all"
       ? baseByKeyword
       : baseByKeyword.filter((j) => getPayRangeKey(j.pay) === payRange);
@@ -229,7 +251,8 @@ export default function JobsView(props: JobsViewProps) {
     try {
       const parsed = new URL(rawUrl);
       if (parsed.protocol !== "https:") return;
-      if (!["onlinejobs.ph", "www.onlinejobs.ph"].includes(parsed.hostname)) return;
+      const allowedHosts = ["onlinejobs.ph", "www.onlinejobs.ph", "bruntworkcareers.co", "www.bruntworkcareers.co"];
+      if (!allowedHosts.includes(parsed.hostname)) return;
       invoke("plugin:opener|open_url", { url: parsed.toString() });
     } catch {
       // Ignore invalid URLs.
@@ -265,7 +288,7 @@ export default function JobsView(props: JobsViewProps) {
       <div class="relative flex flex-1 min-h-0">
 
         {/* Keyword side panel */}
-        <div class="w-44 md:w-52 shrink-0 flex flex-col border-r border-mk-separator py-3">
+        <div class="w-44 md:w-52 shrink-0 flex flex-col border-r border-mk-separator py-3 overflow-y-auto">
           <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Keywords</p>
 
           {/* All */}
@@ -372,14 +395,37 @@ export default function JobsView(props: JobsViewProps) {
           </div>
 
           {/* Sources */}
-          <div class="mt-auto px-3 pt-4 pb-1 border-t border-mk-separator">
-            <p class="text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary mb-2">Sources</p>
-            <div class="flex items-center gap-2">
-              <span class={`w-[6px] h-[6px] rounded-full shrink-0 transition-colors ${
-                props.crawling ? "bg-mk-green animate-pulse" : "bg-mk-tertiary"
-              }`} />
-              <span class="text-[11px] text-mk-secondary">OnlineJobs.ph</span>
-            </div>
+          <div class="mt-3 pt-3 border-t border-mk-separator">
+            <p class="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-mk-tertiary">Sources</p>
+            <button
+              class={`flex items-center justify-between px-3 py-1.5 text-left transition-colors w-full ${
+                selectedSource() === null
+                  ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                  : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+              }`}
+              onClick={() => setSelectedSource(null)}
+            >
+              <span class="text-[12px] font-medium">All</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{(props.jobs() || []).length}</span>
+            </button>
+            <For each={sourceList()}>
+              {(item) => (
+                <button
+                  class={`flex items-center gap-2 px-3 py-1.5 text-left transition-colors w-full ${
+                    selectedSource() === item.source
+                      ? "text-mk-cyan bg-mk-fill border-l-2 border-mk-cyan"
+                      : "text-mk-secondary hover:bg-mk-fill border-l-2 border-transparent"
+                  }`}
+                  onClick={() => setSelectedSource(selectedSource() === item.source ? null : item.source)}
+                >
+                  <span class={`w-[6px] h-[6px] rounded-full shrink-0 ${sourceDotClass(item.source)} ${
+                    props.crawling && item.source === "onlinejobs" ? "animate-pulse" : ""
+                  }`} />
+                  <span class="text-[12px] truncate flex-1">{sourceLabel(item.source)}</span>
+                  <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{item.count}</span>
+                </button>
+              )}
+            </For>
           </div>
         </div>
 
@@ -481,6 +527,11 @@ export default function JobsView(props: JobsViewProps) {
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden"><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden">
+                                  <Show when={job.job_type} fallback={<span class="text-mk-tertiary text-[11px]">-</span>}>
+                                    <span class={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${job.job_type.toLowerCase().includes("full") ? "bg-blue-500/15 text-blue-400 border border-blue-500/30" : job.job_type.toLowerCase().includes("part") ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "bg-mk-fill text-mk-secondary border border-mk-separator"}`}>{job.job_type}</span>
+                                  </Show>
+                                </td>
                                 <td class="px-2 py-2.5 overflow-hidden">
                                   <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={(e) => { e.stopPropagation(); openUrl(job.url); }}>Open</button>
                                 </td>
