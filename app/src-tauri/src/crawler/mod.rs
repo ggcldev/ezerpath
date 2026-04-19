@@ -18,7 +18,6 @@ const CRAWL_DELAY: Duration = Duration::from_secs(5);
 const MAX_PAGES: usize = 5;
 const FETCH_MAX_ATTEMPTS: usize = 3;
 const FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(700);
-const SCRAPLING_ENABLE_ENV: &str = "EZER_ENABLE_SCRAPLING_FALLBACK";
 const SCRAPLING_BASE_URL_ENV: &str = "EZER_SCRAPLING_BASE_URL";
 
 pub struct Crawler {
@@ -33,6 +32,7 @@ pub struct JobDetailsPayload {
     pub description: String,
     pub description_html: String,
     pub job_type: String,
+    pub posted_at: String,
 }
 
 #[derive(Debug)]
@@ -78,6 +78,7 @@ struct ScraplingDetailsResponse {
     company_logo_url: Option<String>,
     description: Option<String>,
     description_html: Option<String>,
+    posted_at: Option<String>,
 }
 
 impl Crawler {
@@ -189,6 +190,25 @@ impl Crawler {
         })
     }
 
+    /// Fetch the same URL as an RSC payload (Next.js App Router). Returns the
+    /// raw response text which contains the serialized RSC stream (the same
+    /// format as the `self.__next_f.push` chunks, but without HTML wrapping
+    /// and including the full server-rendered data).
+    async fn fetch_rsc_payload(&self, url: &str) -> Option<String> {
+        let resp = self.client
+            .get(url)
+            .header("RSC", "1")
+            .header("Accept", "text/x-component")
+            .header("Next-Router-State-Tree", "%5B%22%22%2C%7B%7D%2C%22%22%2Cnull%2Cnull%2Ctrue%5D")
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.text().await.ok()
+    }
+
     async fn fetch_with_retry(&self, url: &str) -> Result<String, String> {
         let mut last_err = String::from("unknown fetch error");
         for attempt in 1..=FETCH_MAX_ATTEMPTS {
@@ -208,11 +228,12 @@ impl Crawler {
     }
 
     fn scrapling_base_url() -> Option<String> {
-        let enabled = std::env::var(SCRAPLING_ENABLE_ENV).unwrap_or_default() == "1";
-        if !enabled {
-            return None;
-        }
-        let base = std::env::var(SCRAPLING_BASE_URL_ENV).ok()?;
+        // Scrapling is always-on: defaults to the same host/port as the bundled
+        // ai_service (127.0.0.1:8765). Override with EZER_SCRAPLING_BASE_URL.
+        // If the service isn't running, HTTP calls will simply fail and the
+        // crawler falls back to its built-in parsers — no config needed.
+        let base = std::env::var(SCRAPLING_BASE_URL_ENV)
+            .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string());
         let trimmed = base.trim().trim_end_matches('/').to_string();
         if trimmed.is_empty() {
             None
@@ -299,7 +320,9 @@ impl Crawler {
         }
         let data = resp.json::<ScraplingDetailsResponse>().await.ok()?;
         let description = data.description.map(|s| normalize_text(&s)).unwrap_or_default();
-        let job_type = infer_job_type("", &description);
+        let description_html = data.description_html.unwrap_or_default();
+        let text_for_inference = if description.is_empty() { &description_html } else { &description };
+        let job_type = infer_job_type("", text_for_inference);
         Some(JobDetailsPayload {
             company: data.company.map(|s| normalize_text(&s)).unwrap_or_default(),
             poster_name: data.poster_name.map(|s| normalize_text(&s)).unwrap_or_default(),
@@ -308,8 +331,9 @@ impl Crawler {
                 .map(|s| normalize_asset_url(&s))
                 .unwrap_or_default(),
             description,
-            description_html: data.description_html.unwrap_or_default(),
+            description_html,
             job_type,
+            posted_at: data.posted_at.unwrap_or_default(),
         })
     }
 
@@ -319,7 +343,44 @@ impl Crawler {
         }
         let html = self.fetch_with_retry(url).await?;
         if url.contains("bruntworkcareers.co") {
-            return parse_bruntwork_job_details(&html);
+            // Bruntwork uses Next.js App Router (RSC streaming); a plain HTTP fetch
+            // does not contain rendered content. Try scrapling (headless browser) first.
+            if let Some(scrapled) = self.try_scrapling_details_fallback(url, None).await {
+                // Reject if scrapling returned RSC streaming garbage instead of real content
+                let has_garbage = is_rsc_garbage(&scrapled.description)
+                    || is_rsc_garbage(&scrapled.description_html);
+                if is_meaningful_job_details(&scrapled) && !has_garbage {
+                    let mut result = scrapled;
+                    if result.posted_at.is_empty() {
+                        result.posted_at = extract_bruntwork_published_date(&html);
+                    }
+                    return Ok(result);
+                }
+            }
+
+            // Try parsing the static HTML first (cheap).
+            let mut payload = parse_bruntwork_job_details(&html)?;
+
+            // If description is still empty, try fetching the RSC payload via the
+            // `RSC: 1` header. Next.js App Router returns the full server-rendered
+            // data (including descriptions) in this format.
+            if payload.description.is_empty() && payload.description_html.is_empty() {
+                if let Some(rsc) = self.fetch_rsc_payload(url).await {
+                    if let Some((desc, desc_html)) = try_parse_rsc_payload_description(&rsc) {
+                        payload.description = desc;
+                        payload.description_html = desc_html;
+                        let text = if payload.description.is_empty() {
+                            &payload.description_html
+                        } else {
+                            &payload.description
+                        };
+                        if payload.job_type.is_empty() {
+                            payload.job_type = infer_job_type("", text);
+                        }
+                    }
+                }
+            }
+            return Ok(payload);
         }
         let parsed = parse_job_details(&html)?;
         if is_meaningful_job_details(&parsed) {
@@ -771,6 +832,7 @@ fn parse_job_details(html: &str) -> Result<JobDetailsPayload, String> {
         description,
         description_html,
         job_type,
+        posted_at: String::new(),
     })
 }
 
@@ -1138,8 +1200,19 @@ fn try_parse_bruntwork_next_data(html: &str, now: &str) -> Option<Vec<Job>> {
         let job_type = map_bruntwork_job_type(&raw_type);
 
         let posted_at = item
-            .get("publishedOn").or_else(|| item.get("published_on")).or_else(|| item.get("createdAt"))
+            .get("publishedOn").or_else(|| item.get("published_on"))
+            .or_else(|| item.get("createdAt")).or_else(|| item.get("created_at"))
+            .or_else(|| item.get("datePosted")).or_else(|| item.get("date_posted"))
+            .or_else(|| item.get("postedDate")).or_else(|| item.get("updatedAt"))
             .and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        let pay = item
+            .get("salary").or_else(|| item.get("salaryMin")).or_else(|| item.get("salary_min"))
+            .or_else(|| item.get("hourlyRate")).or_else(|| item.get("hourly_rate"))
+            .or_else(|| item.get("compensation")).or_else(|| item.get("payRate"))
+            .and_then(|v| v.as_str().map(|s| s.to_string())
+                .or_else(|| v.as_f64().map(|n| format!("${n}"))))
+            .unwrap_or_default();
 
         let url = format!("{BRUNTWORK_SITE_BASE}/jobs/{id}");
         jobs.push(Job {
@@ -1149,7 +1222,7 @@ fn try_parse_bruntwork_next_data(html: &str, now: &str) -> Option<Vec<Job>> {
             title,
             company: "BruntWork".to_string(),
             company_logo_url: String::new(),
-            pay: String::new(),
+            pay,
             posted_at,
             url,
             summary: String::new(),
@@ -1193,6 +1266,10 @@ fn parse_bruntwork_search_html(html: &str, now: &str) -> Result<Vec<Job>, String
         let (title, job_type) = split_bruntwork_title_type(&text);
         if title.is_empty() { continue; }
 
+        // Bruntwork is a Next.js app; dates are in __NEXT_DATA__ JSON (handled by
+        // try_parse_bruntwork_next_data). The HTML fallback has no reliable date element.
+        let posted_at = String::new();
+
         seen_ids.insert(id.clone());
         let url = format!("{BRUNTWORK_SITE_BASE}/jobs/{id}");
         jobs.push(Job {
@@ -1203,7 +1280,7 @@ fn parse_bruntwork_search_html(html: &str, now: &str) -> Result<Vec<Job>, String
             company: "BruntWork".to_string(),
             company_logo_url: String::new(),
             pay: String::new(),
-            posted_at: String::new(),
+            posted_at,
             url,
             summary: String::new(),
             keyword: String::new(),
@@ -1269,19 +1346,166 @@ fn extract_bruntwork_hour_range(s: &str) -> Option<String> {
     }
 }
 
+/// Decode a JSON-escaped string literal starting immediately after the opening `"`.
+/// Returns the decoded string and how many bytes were consumed (including the closing `"`).
+fn decode_json_string(s: &str) -> Option<(String, usize)> {
+    let bytes = s.as_bytes();
+    let mut result = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => return Some((result, i + 1)),
+            b'\\' if i + 1 < bytes.len() => {
+                i += 1;
+                match bytes[i] {
+                    b'"'  => result.push('"'),
+                    b'\\' => result.push('\\'),
+                    b'/'  => result.push('/'),
+                    b'n'  => result.push('\n'),
+                    b'r'  => result.push('\r'),
+                    b't'  => result.push('\t'),
+                    b'b'  => result.push('\x08'),
+                    b'f'  => result.push('\x0c'),
+                    b'u' if i + 4 < bytes.len() => {
+                        if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 5]) {
+                            if let Ok(code) = u32::from_str_radix(hex, 16) {
+                                if let Some(ch) = char::from_u32(code) {
+                                    result.push(ch);
+                                }
+                            }
+                            i += 4;
+                        }
+                    }
+                    c => result.push(c as char),
+                }
+            }
+            c => result.push(c as char),
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Extract description from a raw RSC payload (response body of a `RSC: 1` request).
+/// Each line is of the form `ID:DATA` where DATA is JSON, a string, or an import ref.
+fn try_parse_rsc_payload_description(payload: &str) -> Option<(String, String)> {
+    for line in payload.lines() {
+        let Some(colon) = line.find(':') else { continue };
+        let id = &line[..colon];
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) { continue; }
+        let data = &line[colon + 1..];
+        if !data.starts_with('{') && !data.starts_with('[') { continue; }
+        let Ok(val) = serde_json::from_str::<Value>(data) else { continue };
+
+        for key in &["description", "descriptionHtml", "body", "content"] {
+            if let Some(s) = find_first_key_string(&val, key) {
+                if s.len() > 80 && !s.contains("self.__next_f") {
+                    let is_html = s.contains('<') && s.contains('>');
+                    return Some(if is_html {
+                        (String::new(), s)
+                    } else {
+                        (normalize_text(&s), String::new())
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Try to extract the job description from Next.js App Router RSC streaming data
+/// (`self.__next_f.push([1,"..."])` chunks embedded in the page HTML).
+fn try_parse_bruntwork_rsc_description(html: &str) -> Option<(String, String)> {
+    let prefix = "self.__next_f.push([1,\"";
+    let mut search_pos = 0;
+
+    while search_pos < html.len() {
+        let rel = html[search_pos..].find(prefix)?;
+        let content_start = search_pos + rel + prefix.len();
+        let (chunk, consumed) = decode_json_string(&html[content_start..])?;
+        search_pos = content_start + consumed;
+
+        for line in chunk.lines() {
+            // RSC line format: "ID:DATA" — skip import refs like "2:I[...]"
+            let Some(colon) = line.find(':') else { continue };
+            let data = &line[colon + 1..];
+            if !data.starts_with('{') && !data.starts_with('[') {
+                continue;
+            }
+            let Ok(val) = serde_json::from_str::<Value>(data) else { continue };
+
+            for key in &["description", "descriptionHtml", "body", "content"] {
+                if let Some(s) = find_first_key_string(&val, key) {
+                    if s.len() > 80 && !s.contains("self.__next_f") {
+                        let is_html = s.contains('<') && s.contains('>');
+                        return Some(if is_html {
+                            (String::new(), s)
+                        } else {
+                            (normalize_text(&s), String::new())
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns true if the text is Next.js RSC streaming garbage (not real content).
+fn is_rsc_garbage(text: &str) -> bool {
+    text.contains("self.__next_f") || text.contains("static/chunks/")
+}
+
+fn extract_bruntwork_published_date(html: &str) -> String {
+    // Bruntwork job pages show "Published on\nApr 10 2026" as visible text
+    let text = Html::parse_document(html)
+        .root_element()
+        .text()
+        .collect::<String>();
+    let needle = "Published on";
+    if let Some(idx) = text.find(needle) {
+        let after = text[idx + needle.len()..].trim_start_matches(['\n', '\r', ' ']);
+        // Take up to first newline / double space as the date string
+        let date_str = after.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        if !date_str.is_empty() {
+            return date_str.to_string();
+        }
+    }
+    String::new()
+}
+
 fn parse_bruntwork_job_details(html: &str) -> Result<JobDetailsPayload, String> {
-    // Try __NEXT_DATA__ first (most reliable on Next.js sites)
-    if let Some(payload) = try_parse_bruntwork_details_next_data(html) {
+    let posted_at = extract_bruntwork_published_date(html);
+
+    // 1. Try __NEXT_DATA__ (Next.js Pages Router — older sites)
+    if let Some(mut payload) = try_parse_bruntwork_details_next_data(html) {
+        if payload.posted_at.is_empty() { payload.posted_at = posted_at.clone(); }
         if is_meaningful_job_details(&payload) {
             return Ok(payload);
         }
     }
-    // Fall back to generic HTML parser
-    let mut payload = parse_job_details(html)?;
-    // Override company to always be BruntWork
-    if payload.company.is_empty() {
-        payload.company = "BruntWork".to_string();
+
+    // 2. Try RSC stream parser (Next.js App Router — current Bruntwork)
+    if let Some((desc, desc_html)) = try_parse_bruntwork_rsc_description(html) {
+        let job_type = infer_job_type("", if desc.is_empty() { &desc_html } else { &desc });
+        return Ok(JobDetailsPayload {
+            company: "BruntWork".to_string(),
+            poster_name: String::new(),
+            company_logo_url: String::new(),
+            description: desc,
+            description_html: desc_html,
+            job_type,
+            posted_at,
+        });
     }
+
+    // 3. Generic HTML parser — strip RSC script garbage from description
+    let mut payload = parse_job_details(html)?;
+    if payload.company.is_empty() { payload.company = "BruntWork".to_string(); }
+    if payload.posted_at.is_empty() { payload.posted_at = posted_at; }
+    // If description is RSC garbage, clear it so the drawer shows nothing instead
+    if is_rsc_garbage(&payload.description) { payload.description = String::new(); }
+    if is_rsc_garbage(&payload.description_html) { payload.description_html = String::new(); }
     Ok(payload)
 }
 
@@ -1292,29 +1516,52 @@ fn try_parse_bruntwork_details_next_data(html: &str) -> Option<JobDetailsPayload
     let raw = script.text().collect::<String>();
     let value: Value = serde_json::from_str(&raw).ok()?;
 
-    let description = find_first_key_string(&value, "description")
-        .map(|s| normalize_text(&s))
+    let raw_desc = find_first_key_string(&value, "description")
+        .or_else(|| find_first_key_string(&value, "descriptionHtml"))
+        .or_else(|| find_first_key_string(&value, "description_html"))
+        .or_else(|| find_first_key_string(&value, "body"))
+        .or_else(|| find_first_key_string(&value, "content"))
         .unwrap_or_default();
-    if description.is_empty() {
+    if raw_desc.is_empty() {
         return None;
     }
 
+    // If the description contains HTML markup, route it to description_html so the
+    // frontend renders it properly. Otherwise treat as plain text.
+    let looks_like_html = raw_desc.contains('<') && raw_desc.contains('>');
+    let (description, description_html) = if looks_like_html {
+        (String::new(), raw_desc.trim().to_string())
+    } else {
+        (normalize_text(&raw_desc), String::new())
+    };
+
+    let text_for_inference = if description.is_empty() { &description_html } else { &description };
     let raw_type = find_first_key_string(&value, "jobType")
         .or_else(|| find_first_key_string(&value, "job_type"))
         .unwrap_or_default();
     let job_type = if raw_type.is_empty() {
-        infer_job_type("", &description)
+        infer_job_type("", text_for_inference)
     } else {
         map_bruntwork_job_type(&raw_type)
     };
+
+    let posted_at = find_first_key_string(&value, "publishedOn")
+        .or_else(|| find_first_key_string(&value, "published_on"))
+        .or_else(|| find_first_key_string(&value, "publishedAt"))
+        .or_else(|| find_first_key_string(&value, "createdAt"))
+        .or_else(|| find_first_key_string(&value, "created_at"))
+        .or_else(|| find_first_key_string(&value, "datePosted"))
+        .or_else(|| find_first_key_string(&value, "date_posted"))
+        .unwrap_or_default();
 
     Some(JobDetailsPayload {
         company: "BruntWork".to_string(),
         poster_name: String::new(),
         company_logo_url: String::new(),
         description,
-        description_html: String::new(),
+        description_html,
         job_type,
+        posted_at,
     })
 }
 
