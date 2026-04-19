@@ -39,6 +39,7 @@ interface SettingsPanelProps {
   onCheckEmbedding: () => void;
   onIndexJobs: () => void;
   onResumeFilePathChange: (value: string) => void;
+  onBrowseResumeFile: () => void;
   onUploadResumeFromPath: () => void;
   onSelectResume: (resumeId: number) => void;
   onIndexResume: () => void;
@@ -282,18 +283,29 @@ export default function SettingsPanel(props: SettingsPanelProps) {
               <div class="mt-4 border-t border-mk-separator pt-3">
                 <h4 class="text-[13px] font-semibold text-mk-text">Resume Embedding</h4>
                 <label class="block text-[12px] text-mk-secondary mt-2">
-                  Resume File Path (`.pdf`, `.docx`, `.txt`)
-                  <input
-                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
-                    value={props.resumeFilePath}
-                    onInput={(e) => props.onResumeFilePathChange(e.currentTarget.value)}
-                    placeholder="/Users/you/Documents/resume.pdf"
-                  />
+                  Resume File (`.pdf`, `.docx`, `.txt`)
+                  <div class="mt-1 flex items-stretch gap-2">
+                    <input
+                      class="flex-1 min-w-0 rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
+                      value={props.resumeFilePath}
+                      onInput={(e) => props.onResumeFilePathChange(e.currentTarget.value)}
+                      placeholder="Click Browse… or paste a file path"
+                    />
+                    <button
+                      type="button"
+                      class="shrink-0 px-3 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                      disabled={props.aiBusy}
+                      onClick={props.onBrowseResumeFile}
+                      title="Open native file picker"
+                    >
+                      Browse…
+                    </button>
+                  </div>
                 </label>
                 <div class="mt-2 flex flex-wrap items-center gap-2">
                   <button
                     class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
-                    disabled={props.aiBusy}
+                    disabled={props.aiBusy || !props.resumeFilePath.trim()}
                     onClick={props.onUploadResumeFromPath}
                   >
                     Upload Resume

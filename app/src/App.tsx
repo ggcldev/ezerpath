@@ -1,5 +1,6 @@
 import { createSignal, createResource, createEffect, onCleanup, Match, Switch, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ConfirmModal from "./components/ConfirmModal";
 import SettingsPanel from "./components/SettingsPanel";
@@ -305,10 +306,28 @@ function App() {
       toast.success("Job embeddings indexed.");
     });
 
+  const handleBrowseResumeFile = async () => {
+    try {
+      const picked = await openDialog({
+        title: "Select your resume",
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "Resumes", extensions: ["pdf", "docx", "txt"] },
+        ],
+      });
+      if (typeof picked === "string" && picked.trim().length > 0) {
+        setResumeFilePath(picked);
+      }
+    } catch (e: any) {
+      setGlobalError(`Could not open file picker: ${String(e)}`);
+    }
+  };
+
   const uploadResumeFromPath = () =>
     withAiBusy(async () => {
       if (!resumeFilePath().trim()) {
-        toast.error("Please enter a resume file path first.");
+        toast.error("Please select a resume file first.");
         return;
       }
       const profile = await invoke<ResumeProfile>("upload_resume_from_file", {
@@ -434,6 +453,7 @@ function App() {
         onCheckEmbedding={checkEmbedding}
         onIndexJobs={indexJobs}
         onResumeFilePathChange={setResumeFilePath}
+        onBrowseResumeFile={handleBrowseResumeFile}
         onUploadResumeFromPath={uploadResumeFromPath}
         onSelectResume={selectResume}
         onIndexResume={indexResume}
