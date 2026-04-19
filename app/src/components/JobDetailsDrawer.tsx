@@ -26,6 +26,7 @@ interface CrawledJobDetails {
   company_logo_url: string;
   description: string;
   description_html: string;
+  posted_at: string;
 }
 
 function formatPosted(raw: string): string {
@@ -55,19 +56,28 @@ function plainTextToSimpleHtml(value: string): string {
     .join("");
 }
 
+function isRscGarbage(text: string): boolean {
+  return text.includes("self.__next_f") || text.includes("static/chunks/");
+}
+
 function buildDescriptionHtml(crawled: CrawledJobDetails | null, fallbackSummary: string): string {
   const rawHtml = (crawled?.description_html || "").trim();
-  const rawText = (crawled?.description || fallbackSummary || "").trim();
+  const rawText = (crawled?.description || "").trim();
+  const summary = (fallbackSummary || "").trim();
 
-  if (rawHtml) {
+  if (rawHtml && !isRscGarbage(rawHtml)) {
     return sanitizeDescriptionHtml(rawHtml);
   }
 
-  if (rawText) {
+  if (rawText && !isRscGarbage(rawText)) {
     return sanitizeDescriptionHtml(plainTextToSimpleHtml(rawText));
   }
 
-  return "<p>No description available from the listing preview.</p>";
+  if (summary && !isRscGarbage(summary)) {
+    return sanitizeDescriptionHtml(plainTextToSimpleHtml(summary));
+  }
+
+  return "<p>No description available in preview. Open the full listing on BruntWork's website to view the complete job description.</p>";
 }
 
 function htmlToPlainText(raw: string): string {
@@ -272,7 +282,7 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
       `Posted By: ${crawled()?.poster_name || "-"}`,
       `Source: ${job.source || "-"}`,
       `Posted: ${formatPosted(job.posted_at)}`,
-      `Pay: ${job.pay || "-"}`,
+      `Pay: ${job.pay || "Undisclosed"}`,
       `Keyword: ${job.keyword || "-"}`,
       `URL: ${job.url || "-"}`,
       "",
@@ -322,11 +332,11 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
             <div class="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
               <span class="inline-flex items-center gap-1 text-mk-secondary">
                 <CalendarDays class="w-3.5 h-3.5 text-mk-tertiary" />
-                {formatPosted(job().posted_at)}
+                {formatPosted(crawled()?.posted_at || job().posted_at)}
               </span>
               <span class="inline-flex items-center gap-1 text-mk-secondary">
                 <Wallet class="w-3.5 h-3.5 text-mk-tertiary" />
-                {job().pay || "-"}
+                {job().pay || "Undisclosed"}
               </span>
               <span class="inline-flex items-center gap-1 text-mk-secondary">
                 <Tag class="w-3.5 h-3.5 text-mk-tertiary" />
