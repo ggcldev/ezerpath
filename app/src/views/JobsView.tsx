@@ -57,7 +57,7 @@ const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
   { key: "8_11", label: "$8-10.99/hr" },
   { key: "11_15", label: "$11-14.99/hr" },
   { key: "15_plus", label: "$15+/hr" },
-  { key: "unspecified", label: "Unspecified/Negotiable" },
+  { key: "unspecified", label: "Undisclosed" },
 ];
 const PHP_PER_USD = 56;
 const HOURS_PER_MONTH = 160;
@@ -574,7 +574,7 @@ export default function JobsView(props: JobsViewProps) {
                                   </span>
                                 </td>
                                 <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
-                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                                <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "Undisclosed"}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden" style={{ "max-width": "0" }}><span class="block truncate text-[12px] text-mk-secondary">{job.job_type || "-"}</span></td>
                                 <td class="px-2 py-2.5 overflow-hidden">
                                   <button class="py-0.5 text-[11px] rounded-md text-mk-cyan hover:bg-mk-fill transition-all" onClick={(e) => { e.stopPropagation(); openUrl(job.url); }}>Open</button>

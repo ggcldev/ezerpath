@@ -225,7 +225,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[13px] font-medium text-mk-text">{job.title}</span></td>
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate"><span class="px-1.5 py-0.5 rounded text-[11px] bg-mk-fill text-mk-cyan border border-mk-separator">{job.keyword}</span></span></td>
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[12px] text-mk-tertiary">{job.source}</span></td>
-                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "-"}</span></td>
+                        <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}><span class="block truncate text-[13px] text-mk-secondary">{job.pay || "Undisclosed"}</span></td>
                         <td class={`px-2 py-2.5 overflow-hidden ${job.applied ? "opacity-40 grayscale" : ""}`}>
                           <Show when={job.job_type} fallback={<span class="text-mk-tertiary text-[11px]">-</span>}>
                             <span class={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${job.job_type.toLowerCase().includes("full") ? "bg-blue-500/15 text-blue-400 border border-blue-500/30" : job.job_type.toLowerCase().includes("part") ? "bg-amber-500/15 text-amber-400 border border-amber-500/30" : "bg-mk-fill text-mk-secondary border border-mk-separator"}`}>{job.job_type}</span>
