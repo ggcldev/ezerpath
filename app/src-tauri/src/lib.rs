@@ -1,4 +1,5 @@
 pub mod ai;
+mod ai_service_manager;
 mod crawler;
 pub mod db;
 
@@ -835,6 +836,7 @@ struct AppState {
     ollama: OllamaClient,
     sentence_service: SentenceServiceClient,
     crawl_lock: Mutex<()>,
+    _ai_service: ai_service_manager::ServiceHandle,
 }
 
 async fn run_crawl_inner(
@@ -2107,12 +2109,18 @@ pub fn run() {
                 .map_err(|e| std::io::Error::other(format!("failed to init ollama client: {e}")))?;
             let sentence_service = SentenceServiceClient::new(30_000)
                 .map_err(|e| std::io::Error::other(format!("failed to init sentence service client: {e}")))?;
+            // Spawn the bundled Python AI + scrapling service. Runs in a
+            // background thread so app boot isn't blocked. Killed on drop.
+            let ai_service = std::thread::spawn(ai_service_manager::start)
+                .join()
+                .unwrap_or_else(|_| ai_service_manager::ServiceHandle { child: None });
             app.manage(AppState {
                 db,
                 crawler,
                 ollama,
                 sentence_service,
                 crawl_lock: Mutex::new(()),
+                _ai_service: ai_service,
             });
             Ok(())
         })
