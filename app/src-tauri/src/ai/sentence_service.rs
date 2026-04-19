@@ -1,4 +1,5 @@
 use crate::ai::native_embedder;
+use crate::ai::native_resume_parser;
 use crate::ai::{AiRuntimeConfig, EmbeddingHealth};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -112,10 +113,43 @@ impl SentenceServiceClient {
         })
     }
 
-    pub async fn extract_text_from_file(&self, cfg: &AiRuntimeConfig, file_path: String) -> Result<String, String> {
-        let url = format!("{}/extract-text", cfg.embedding_service_url.trim_end_matches('/'));
+    /// Extract plain text from a resume file (.pdf / .docx / .txt).
+    ///
+    /// Tries the in-process native parser first (pdf-extract + zip/quick-xml);
+    /// falls back to the Python HTTP service only if native fails. Eliminates
+    /// the pypdf / python-docx dependency and skips an HTTP round-trip.
+    pub async fn extract_text_from_file(
+        &self,
+        cfg: &AiRuntimeConfig,
+        file_path: String,
+    ) -> Result<String, String> {
+        // Try native first
+        let path = PathBuf::from(&file_path);
+        match native_resume_parser::extract_text(path).await {
+            Ok(text) => {
+                eprintln!(
+                    "[resume_parser] native extracted {} chars from {}",
+                    text.len(),
+                    file_path
+                );
+                return Ok(text);
+            }
+            Err(e) => eprintln!("[resume_parser] native failed ({e}), falling back to HTTP"),
+        }
+
+        // Fallback: HTTP service (will go away once ai_service/ is deleted)
+        let url = format!(
+            "{}/extract-text",
+            cfg.embedding_service_url.trim_end_matches('/')
+        );
         let req = ExtractTextRequest { file_path };
-        let resp = self.client.post(url).json(&req).send().await.map_err(|e| e.to_string())?;
+        let resp = self
+            .client
+            .post(url)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("Text extraction failed: HTTP {}", resp.status()));
         }
