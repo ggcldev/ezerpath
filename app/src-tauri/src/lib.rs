@@ -2107,7 +2107,12 @@ pub fn run() {
                 .map_err(|e| std::io::Error::other(format!("failed to init crawler: {e}")))?;
             let ollama = OllamaClient::new(30_000)
                 .map_err(|e| std::io::Error::other(format!("failed to init ollama client: {e}")))?;
-            let sentence_service = SentenceServiceClient::new(30_000)
+            let embeddings_cache_dir = app
+                .path()
+                .app_data_dir()
+                .map(|p| p.join("embeddings_cache"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("./embeddings_cache"));
+            let sentence_service = SentenceServiceClient::new(30_000, embeddings_cache_dir)
                 .map_err(|e| std::io::Error::other(format!("failed to init sentence service client: {e}")))?;
             // Spawn the bundled Python AI + scrapling service. Runs in a
             // background thread so app boot isn't blocked. Killed on drop.

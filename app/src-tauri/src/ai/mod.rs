@@ -2,6 +2,7 @@ pub mod ollama;
 pub mod prompts;
 pub mod followup;
 pub mod ranking;
+pub mod native_embedder;
 pub mod sentence_service;
 
 use serde::{Deserialize, Serialize};
