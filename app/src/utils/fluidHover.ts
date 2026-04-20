@@ -11,7 +11,7 @@ export function rowHoverEnter(el: HTMLElement) {
   row.__rowHoverAnimation?.stop();
   row.__rowHoverAnimation = animate(
     row,
-    { transform: "translateY(-0.5px)" },
+    { transform: "translateY(-1px)" },
     { duration: 0.1, easing: EASE_OUT }
   );
 }
