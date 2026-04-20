@@ -837,6 +837,7 @@ struct AppState {
     sentence_service: SentenceServiceClient,
     crawl_lock: Mutex<()>,
     _ai_service: ai_service_manager::ServiceHandle,
+    webview_scraper: crawler::webview_scraper::WebviewScraperState,
 }
 
 async fn run_crawl_inner(
@@ -1003,7 +1004,45 @@ async fn get_jobs(state: State<'_, AppState>, keyword: Option<String>, watchlist
 }
 
 #[tauri::command]
-async fn fetch_job_details(state: State<'_, AppState>, url: String) -> Result<JobDetailsPayload, String> {
+async fn fetch_job_details(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<JobDetailsPayload, String> {
+    // For JS-rendered sites (currently Bruntwork), try the in-process
+    // WebView scraper first. It reuses the WebView Tauri already ships
+    // with the app — no Python / Playwright / Chromium needed on the
+    // end-user machine. Falls through to the crawler's own fallback
+    // chain (static HTML + scrapling HTTP) if webview scraping doesn't
+    // produce a meaningful payload.
+    if url.contains("bruntworkcareers.co") {
+        let timeout = std::time::Duration::from_secs(25);
+        match crawler::webview_scraper::scrape(&app, &state.webview_scraper, &url, timeout).await {
+            Ok(result) => {
+                eprintln!(
+                    "[webview_scraper] ok for {url} ({} text chars)",
+                    result.text_length
+                );
+                let cleaned_html =
+                    crawler::webview_scraper::strip_scripts_and_styles(&result.html);
+                match crawler::parse_bruntwork_job_details(&cleaned_html) {
+                    Ok(payload)
+                        if crawler::is_meaningful_job_details(&payload)
+                            && !crawler::is_rsc_garbage(&payload.description)
+                            && !crawler::is_rsc_garbage(&payload.description_html) =>
+                    {
+                        return Ok(payload);
+                    }
+                    Ok(_) => {
+                        eprintln!("[webview_scraper] payload not meaningful or RSC-garbage, falling back");
+                    }
+                    Err(e) => eprintln!("[webview_scraper] parse failed: {e}"),
+                }
+            }
+            Err(e) => eprintln!("[webview_scraper] failed for {url}: {e}"),
+        }
+    }
+
     state.crawler.fetch_job_details(&url).await
 }
 
@@ -2120,6 +2159,10 @@ pub fn run() {
             let ai_service = std::thread::spawn(ai_service_manager::start)
                 .join()
                 .unwrap_or_else(|_| ai_service_manager::ServiceHandle { child: None });
+            let webview_scraper = crawler::webview_scraper::WebviewScraperState::new();
+            // Register the delivery state separately so the #[tauri::command]
+            // scraper_webview_deliver can grab it via `tauri::State`.
+            app.manage(webview_scraper.clone());
             app.manage(AppState {
                 db,
                 crawler,
@@ -2127,6 +2170,7 @@ pub fn run() {
                 sentence_service,
                 crawl_lock: Mutex::new(()),
                 _ai_service: ai_service,
+                webview_scraper,
             });
             Ok(())
         })
@@ -2164,6 +2208,7 @@ pub fn run() {
             ai_summarize_job,
             ai_compare_jobs,
             ai_start_scan_with_keywords,
+            crawler::webview_scraper::scraper_webview_deliver,
         ])
         .run(tauri::generate_context!());
 

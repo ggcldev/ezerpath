@@ -20,6 +20,8 @@ const FETCH_MAX_ATTEMPTS: usize = 3;
 const FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(700);
 const SCRAPLING_BASE_URL_ENV: &str = "EZER_SCRAPLING_BASE_URL";
 
+pub mod webview_scraper;
+
 pub struct Crawler {
     client: Client,
 }
@@ -1020,7 +1022,7 @@ fn is_retryable_status(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
-fn is_meaningful_job_details(payload: &JobDetailsPayload) -> bool {
+pub(crate) fn is_meaningful_job_details(payload: &JobDetailsPayload) -> bool {
     !payload.description.trim().is_empty()
         || !payload.description_html.trim().is_empty()
         || !payload.company.trim().is_empty()
@@ -1452,7 +1454,7 @@ fn try_parse_bruntwork_rsc_description(html: &str) -> Option<(String, String)> {
 }
 
 /// Returns true if the text is Next.js RSC streaming garbage (not real content).
-fn is_rsc_garbage(text: &str) -> bool {
+pub(crate) fn is_rsc_garbage(text: &str) -> bool {
     text.contains("self.__next_f") || text.contains("static/chunks/")
 }
 
@@ -1474,7 +1476,7 @@ fn extract_bruntwork_published_date(html: &str) -> String {
     String::new()
 }
 
-fn parse_bruntwork_job_details(html: &str) -> Result<JobDetailsPayload, String> {
+pub(crate) fn parse_bruntwork_job_details(html: &str) -> Result<JobDetailsPayload, String> {
     let posted_at = extract_bruntwork_published_date(html);
 
     // 1. Try __NEXT_DATA__ (Next.js Pages Router — older sites)
