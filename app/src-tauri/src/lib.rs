@@ -1015,6 +1015,7 @@ async fn fetch_job_details(
     // end-user machine. Falls through to the crawler's own fallback
     // chain (static HTML + scrapling HTTP) if webview scraping doesn't
     // produce a meaningful payload.
+    let mut webview_payload: Option<JobDetailsPayload> = None;
     if url.contains("bruntworkcareers.co") {
         let timeout = std::time::Duration::from_secs(25);
         match crawler::webview_scraper::scrape(&app, &state.webview_scraper, &url, timeout).await {
@@ -1031,7 +1032,7 @@ async fn fetch_job_details(
                             && !crawler::is_rsc_garbage(&payload.description)
                             && !crawler::is_rsc_garbage(&payload.description_html) =>
                     {
-                        return Ok(payload);
+                        webview_payload = Some(payload);
                     }
                     Ok(_) => {
                         eprintln!("[webview_scraper] payload not meaningful or RSC-garbage, falling back");
@@ -1043,7 +1044,19 @@ async fn fetch_job_details(
         }
     }
 
-    state.crawler.fetch_job_details(&url).await
+    let payload = match webview_payload {
+        Some(p) => p,
+        None => state.crawler.fetch_job_details(&url).await?,
+    };
+
+    // Backfill the jobs row's posted_at when details fetch finds a date
+    // (primarily Bruntwork, whose list page has no reliable date element).
+    // Only updates rows that were previously empty.
+    if let Err(e) = state.db.update_job_posted_at(&url, &payload.posted_at) {
+        eprintln!("[fetch_job_details] failed to backfill posted_at for {url}: {e}");
+    }
+
+    Ok(payload)
 }
 
 #[tauri::command]

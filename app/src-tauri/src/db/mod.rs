@@ -492,6 +492,21 @@ impl Database {
         Ok(())
     }
 
+    /// Backfill `posted_at` for a job row when details are fetched on demand
+    /// (e.g. Bruntwork pages where the list crawl can't see the date).
+    /// No-op if the row already has a non-empty `posted_at`.
+    pub fn update_job_posted_at(&self, url: &str, posted_at: &str) -> Result<(), rusqlite::Error> {
+        if posted_at.trim().is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE jobs SET posted_at = ?1 WHERE url = ?2 AND (posted_at IS NULL OR posted_at = '')",
+            params![posted_at, url],
+        )?;
+        Ok(())
+    }
+
     pub fn insert_job(&self, job: &Job, run_id: i64) -> Result<bool, rusqlite::Error> {
         let conn = self.conn()?;
         let parsed = parse_pay(&job.pay);

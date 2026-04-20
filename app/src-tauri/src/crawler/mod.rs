@@ -1459,21 +1459,91 @@ pub(crate) fn is_rsc_garbage(text: &str) -> bool {
 }
 
 fn extract_bruntwork_published_date(html: &str) -> String {
-    // Bruntwork job pages show "Published on\nApr 10 2026" as visible text
+    // Bruntwork job pages show "Published on" followed by a date like "Apr 10 2026".
+    // On fully-rendered DOM output (WebView), scraper's `.text()` concatenates text
+    // nodes with no separators, so splitting on newlines isn't reliable. Parse a
+    // `<Month> <day> <year>` token explicitly instead.
     let text = Html::parse_document(html)
         .root_element()
         .text()
         .collect::<String>();
     let needle = "Published on";
-    if let Some(idx) = text.find(needle) {
-        let after = text[idx + needle.len()..].trim_start_matches(['\n', '\r', ' ']);
-        // Take up to first newline / double space as the date string
-        let date_str = after.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-        if !date_str.is_empty() {
-            return date_str.to_string();
-        }
+    let Some(idx) = text.find(needle) else { return String::new() };
+    parse_date_token(&text[idx + needle.len()..]).unwrap_or_default()
+}
+
+/// Parse a leading `<Month> <day> <year>` date token from `s`, e.g. `"Apr 13 2026"`
+/// or `"April 13, 2026"`. Leading whitespace/punctuation is skipped. Returns the
+/// normalized `"Mon D YYYY"` form, or `None` if the pattern doesn't match.
+fn parse_date_token(s: &str) -> Option<String> {
+    let s = s.trim_start_matches(|c: char| c.is_whitespace() || c == ':');
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    let month_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() && i - month_start < 9 {
+        i += 1;
     }
-    String::new()
+    let month = &s[month_start..i];
+    if !is_month_name(month) {
+        return None;
+    }
+
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r' | b',') {
+        i += 1;
+    }
+
+    let day_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() && i - day_start < 2 {
+        i += 1;
+    }
+    if i == day_start {
+        return None;
+    }
+    let day: u32 = s[day_start..i].parse().ok()?;
+    if !(1..=31).contains(&day) {
+        return None;
+    }
+
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r' | b',') {
+        i += 1;
+    }
+
+    if i + 4 > bytes.len() {
+        return None;
+    }
+    let year = &s[i..i + 4];
+    if !year.as_bytes().iter().all(|b| b.is_ascii_digit()) || !year.starts_with('2') {
+        return None;
+    }
+
+    let mon_abbr: String = month.chars().take(3).collect();
+    let mon_abbr = {
+        let mut c = mon_abbr.chars();
+        match c.next() {
+            Some(first) => first.to_ascii_uppercase().to_string() + &c.as_str().to_ascii_lowercase(),
+            None => String::new(),
+        }
+    };
+    Some(format!("{mon_abbr} {day} {year}"))
+}
+
+fn is_month_name(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "jan" | "january"
+            | "feb" | "february"
+            | "mar" | "march"
+            | "apr" | "april"
+            | "may"
+            | "jun" | "june"
+            | "jul" | "july"
+            | "aug" | "august"
+            | "sep" | "sept" | "september"
+            | "oct" | "october"
+            | "nov" | "november"
+            | "dec" | "december"
+    )
 }
 
 pub(crate) fn parse_bruntwork_job_details(html: &str) -> Result<JobDetailsPayload, String> {
