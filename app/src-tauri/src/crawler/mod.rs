@@ -1639,7 +1639,7 @@ fn try_parse_bruntwork_details_next_data(html: &str) -> Option<JobDetailsPayload
 
 #[cfg(test)]
 mod tests {
-    use super::{is_allowed_job_url, posted_at_days_ago};
+    use super::*;
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -1694,5 +1694,378 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 4, 16, 12, 0, 0).unwrap();
         assert_eq!(posted_at_days_ago("", &now), None);
         assert_eq!(posted_at_days_ago("some random text", &now), None);
+    }
+
+    #[test]
+    fn normalize_text_collapses_whitespace() {
+        assert_eq!(normalize_text("  foo   bar\tbaz\n\nqux  "), "foo bar baz qux");
+        assert_eq!(normalize_text(""), "");
+        assert_eq!(normalize_text("   "), "");
+        assert_eq!(normalize_text("single"), "single");
+    }
+
+    #[test]
+    fn map_employment_type_canonicalises() {
+        assert_eq!(map_employment_type("FULL_TIME"), "Full-Time");
+        assert_eq!(map_employment_type("full-time"), "Full-Time");
+        assert_eq!(map_employment_type("fulltime"), "Full-Time");
+        assert_eq!(map_employment_type("PART_TIME"), "Part-Time");
+        assert_eq!(map_employment_type("part-time"), "Part-Time");
+        assert_eq!(map_employment_type("Contractor"), "Contract");
+        assert_eq!(map_employment_type("contract"), "Contract");
+        assert_eq!(map_employment_type("freelance"), "Contract");
+        assert_eq!(map_employment_type("INTERN"), "");
+        assert_eq!(map_employment_type(""), "");
+    }
+
+    #[test]
+    fn extract_weekly_hours_matches_common_phrases() {
+        assert_eq!(extract_weekly_hours("20 hours/week"), Some(20));
+        assert_eq!(extract_weekly_hours("40 hours per week"), Some(40));
+        assert_eq!(extract_weekly_hours("35 hours a week"), Some(35));
+        assert_eq!(extract_weekly_hours("15 hrs/wk"), Some(15));
+        assert_eq!(extract_weekly_hours("22 hours weekly"), Some(22));
+        assert_eq!(extract_weekly_hours("no hours here"), None);
+        assert_eq!(extract_weekly_hours("worked 5 hours on the task"), None);
+        assert_eq!(extract_weekly_hours("200 hours/week"), None);
+    }
+
+    #[test]
+    fn infer_job_type_prefers_explicit_labels() {
+        assert_eq!(infer_job_type("Full-Time SEO Specialist", ""), "Full-Time");
+        assert_eq!(infer_job_type("Part Time VA", ""), "Part-Time");
+        assert_eq!(
+            infer_job_type("SEO Specialist", "This is a full-time role, 40 hours per week."),
+            "Full-Time (40 hrs/wk)",
+        );
+        assert_eq!(
+            infer_job_type("Admin", "part-time, 20 hours/week"),
+            "Part-Time (20 hrs/wk)",
+        );
+    }
+
+    #[test]
+    fn infer_job_type_uses_hours_when_no_label() {
+        assert_eq!(
+            infer_job_type("Manager", "40 hours per week"),
+            "Full-Time (40 hrs/wk)",
+        );
+        assert_eq!(
+            infer_job_type("Manager", "20 hours per week"),
+            "Part-Time (20 hrs/wk)",
+        );
+        assert_eq!(infer_job_type("Manager", ""), "");
+    }
+
+    #[test]
+    fn is_meaningful_job_details_requires_some_content() {
+        let empty = JobDetailsPayload {
+            company: String::new(),
+            poster_name: String::new(),
+            company_logo_url: String::new(),
+            description: String::new(),
+            description_html: String::new(),
+            job_type: String::new(),
+            posted_at: String::new(),
+        };
+        assert!(!is_meaningful_job_details(&empty));
+
+        let with_desc = JobDetailsPayload {
+            description: "some text".to_string(),
+            ..empty.clone()
+        };
+        assert!(is_meaningful_job_details(&with_desc));
+
+        let with_html = JobDetailsPayload {
+            description_html: "<p>hi</p>".to_string(),
+            ..empty.clone()
+        };
+        assert!(is_meaningful_job_details(&with_html));
+
+        let with_company = JobDetailsPayload {
+            company: "Acme".to_string(),
+            ..empty.clone()
+        };
+        assert!(is_meaningful_job_details(&with_company));
+
+        // Whitespace-only fields do not qualify.
+        let whitespace = JobDetailsPayload {
+            description: "   ".to_string(),
+            description_html: "\n\t".to_string(),
+            company: "  ".to_string(),
+            ..empty
+        };
+        assert!(!is_meaningful_job_details(&whitespace));
+    }
+
+    #[test]
+    fn parse_date_token_accepts_common_formats() {
+        assert_eq!(parse_date_token("Apr 13 2026").as_deref(), Some("Apr 13 2026"));
+        assert_eq!(parse_date_token("April 13, 2026").as_deref(), Some("Apr 13 2026"));
+        assert_eq!(parse_date_token(": April 5 2026").as_deref(), Some("Apr 5 2026"));
+        assert_eq!(parse_date_token("  May 1 2026").as_deref(), Some("May 1 2026"));
+        assert_eq!(parse_date_token("January 31, 2026").as_deref(), Some("Jan 31 2026"));
+    }
+
+    #[test]
+    fn parse_date_token_rejects_bad_inputs() {
+        assert_eq!(parse_date_token(""), None);
+        assert_eq!(parse_date_token("Foo 13 2026"), None);
+        assert_eq!(parse_date_token("Apr 13 1999"), None); // year must start with '2'
+        assert_eq!(parse_date_token("Apr XX 2026"), None);
+        assert_eq!(parse_date_token("Apr 13"), None);
+    }
+
+    #[test]
+    fn split_bruntwork_title_type_splits_on_marker() {
+        assert_eq!(
+            split_bruntwork_title_type("SEO Specialist Full Time (40 hours per week)"),
+            ("SEO Specialist".to_string(), "Full-Time".to_string()),
+        );
+        assert_eq!(
+            split_bruntwork_title_type("Admin VA Part Time (20 - 30 Hours per week)"),
+            ("Admin VA".to_string(), "Part-Time (20-30 hrs/wk)".to_string()),
+        );
+        assert_eq!(
+            split_bruntwork_title_type("Data Engineer Project Based"),
+            ("Data Engineer".to_string(), "Contract".to_string()),
+        );
+        assert_eq!(
+            split_bruntwork_title_type("Just a title"),
+            ("Just a title".to_string(), String::new()),
+        );
+    }
+
+    #[test]
+    fn map_bruntwork_job_type_maps_variants() {
+        assert_eq!(map_bruntwork_job_type("Full Time (40 hrs)"), "Full-Time");
+        assert_eq!(map_bruntwork_job_type("Full-Time"), "Full-Time");
+        assert_eq!(map_bruntwork_job_type("Part Time"), "Part-Time");
+        assert_eq!(
+            map_bruntwork_job_type("Part Time (20 - 30 Hours per week)"),
+            "Part-Time (20-30 hrs/wk)",
+        );
+        assert_eq!(
+            map_bruntwork_job_type("Part Time (10-19 Hours)"),
+            "Part-Time (10-19 hrs/wk)",
+        );
+        assert_eq!(map_bruntwork_job_type("Project Based"), "Contract");
+        assert_eq!(map_bruntwork_job_type("Project-Based"), "Contract");
+        assert_eq!(map_bruntwork_job_type(""), "");
+        assert_eq!(map_bruntwork_job_type("Something Else"), "Something Else");
+    }
+
+    #[test]
+    fn extract_bruntwork_hour_range_handles_formats() {
+        assert_eq!(
+            extract_bruntwork_hour_range("Part Time (20 - 34 Hours per week)"),
+            Some("20-34".to_string()),
+        );
+        assert_eq!(
+            extract_bruntwork_hour_range("Part Time (10-19 Hours)"),
+            Some("10-19".to_string()),
+        );
+        assert_eq!(
+            extract_bruntwork_hour_range("Part Time (40 Hours)"),
+            Some("40".to_string()),
+        );
+        assert_eq!(extract_bruntwork_hour_range("Part Time 20 hours"), None);
+        assert_eq!(extract_bruntwork_hour_range("Part Time ()"), None);
+    }
+
+    #[test]
+    fn is_rsc_garbage_detects_next_streaming_chunks() {
+        assert!(is_rsc_garbage("self.__next_f.push([1,\"...\"])"));
+        assert!(is_rsc_garbage("look at static/chunks/main.js"));
+        assert!(!is_rsc_garbage("This is a normal job description."));
+        assert!(!is_rsc_garbage(""));
+    }
+
+    #[test]
+    fn decode_json_string_handles_escapes() {
+        let (s, _) = decode_json_string(r#"hello\nworld""#).unwrap();
+        assert_eq!(s, "hello\nworld");
+
+        let (s, _) = decode_json_string(r#"a\tb\\c""#).unwrap();
+        assert_eq!(s, "a\tb\\c");
+
+        let (s, _) = decode_json_string(r#"\u0041BC""#).unwrap();
+        assert_eq!(s, "ABC");
+
+        // Escaped closing quote is content, not terminator — so an unterminated
+        // input returns None.
+        assert!(decode_json_string(r#"hello\nworld\""#).is_none());
+        assert!(decode_json_string(r#"no closing quote"#).is_none());
+    }
+
+    #[test]
+    fn parse_search_page_extracts_onlinejobs_card() {
+        let html = r#"
+            <html><body>
+              <div class="jobpost-cat-box">
+                <div class="jobpost-cat-box-logo">
+                  <img src="https://example.com/logo.png" alt="Acme Corp">
+                </div>
+                <h4>SEO Specialist</h4>
+                <p class="fs-13"><em>Posted on Apr 15, 2026</em></p>
+                <dl class="no-gutters"><dd>$8/hr</dd></dl>
+                <div class="desc">Looking for a full-time SEO specialist, 40 hours per week.</div>
+                <a href="/jobseekers/job/seo-specialist-123456">View</a>
+              </div>
+              <div class="jobpost-cat-box">
+                <h4></h4>
+                <a href="/jobseekers/job/empty-999">Empty</a>
+              </div>
+            </body></html>
+        "#;
+        let jobs = parse_search_page(html, "seo").unwrap();
+        assert_eq!(jobs.len(), 1, "empty-title cards are skipped");
+        let job = &jobs[0];
+        assert_eq!(job.source, "onlinejobs");
+        assert_eq!(job.title, "SEO Specialist");
+        assert_eq!(job.company, "Acme Corp");
+        assert_eq!(job.company_logo_url, "https://example.com/logo.png");
+        assert_eq!(job.pay, "$8/hr");
+        assert_eq!(job.posted_at, "Apr 15, 2026");
+        assert_eq!(job.source_id, "123456");
+        assert_eq!(job.url, "https://www.onlinejobs.ph/jobseekers/job/seo-specialist-123456");
+        assert_eq!(job.keyword, "seo");
+        assert!(job.summary.contains("full-time SEO specialist"));
+        assert_eq!(job.job_type, "Full-Time (40 hrs/wk)");
+        assert!(job.is_new);
+    }
+
+    #[test]
+    fn parse_search_page_rejects_disallowed_urls() {
+        let html = r#"
+            <div class="jobpost-cat-box">
+              <h4>Suspicious Job</h4>
+              <a href="https://evil.example.com/jobseekers/job/1">x</a>
+            </div>
+        "#;
+        let jobs = parse_search_page(html, "k").unwrap();
+        assert!(jobs.is_empty(), "non-allowlisted hosts must be dropped");
+    }
+
+    #[test]
+    fn parse_job_details_reads_jsonld() {
+        let html = r#"
+            <html><head>
+              <script type="application/ld+json">
+              {
+                "@type": "JobPosting",
+                "title": "SEO Specialist",
+                "description": "Work on technical SEO.  Full-time role.",
+                "employmentType": "FULL_TIME",
+                "hiringOrganization": {
+                  "@type": "Organization",
+                  "name": "Acme Corp",
+                  "logo": "https://example.com/logo.png"
+                },
+                "author": {"@type": "Person", "name": "Jane Doe"}
+              }
+              </script>
+            </head><body>
+              <div class="job-description">Ignored because JSON-LD already set description.</div>
+            </body></html>
+        "#;
+        let payload = parse_job_details(html).unwrap();
+        assert_eq!(payload.company, "Acme Corp");
+        assert_eq!(payload.company_logo_url, "https://example.com/logo.png");
+        assert_eq!(payload.poster_name, "Jane Doe");
+        assert_eq!(payload.description, "Work on technical SEO. Full-time role.");
+        assert_eq!(payload.job_type, "Full-Time");
+    }
+
+    #[test]
+    fn parse_job_details_falls_back_to_css() {
+        let html = r#"
+            <html><body>
+              <div class="company-name">Beta LLC</div>
+              <div class="job-description">
+                This is a long enough description to pass the 60-char threshold
+                required by extract_longest_text, talking about a part-time role
+                with 20 hours per week of focused SEO work.
+              </div>
+            </body></html>
+        "#;
+        let payload = parse_job_details(html).unwrap();
+        assert_eq!(payload.company, "Beta LLC");
+        assert!(payload.description.contains("part-time role"));
+        assert_eq!(payload.job_type, "Part-Time (20 hrs/wk)");
+    }
+
+    #[test]
+    fn parse_bruntwork_search_html_extracts_links() {
+        let html = r#"
+            <html><body>
+              <ul>
+                <li><a href="/jobs/123">SEO Specialist Full Time (40 hrs)</a></li>
+                <li><a href="/jobs/456">Admin VA Part Time (20 - 30 Hours per week)</a></li>
+                <li><a href="/jobs/789/apply">Apply link should be skipped</a></li>
+                <li><a href="/jobs/abc">Non-numeric id skipped</a></li>
+                <li><a href="/jobs/123">Duplicate id skipped</a></li>
+                <li><a href="/jobs/999">Data Engineer Project Based</a></li>
+              </ul>
+            </body></html>
+        "#;
+        let jobs = parse_bruntwork_search_html(html, "2026-04-21T00:00:00Z").unwrap();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].source, "bruntwork");
+        assert_eq!(jobs[0].company, "BruntWork");
+        assert_eq!(jobs[0].source_id, "123");
+        assert_eq!(jobs[0].title, "SEO Specialist");
+        assert_eq!(jobs[0].job_type, "Full-Time");
+        assert_eq!(jobs[0].url, format!("{BRUNTWORK_SITE_BASE}/jobs/123"));
+
+        assert_eq!(jobs[1].source_id, "456");
+        assert_eq!(jobs[1].title, "Admin VA");
+        assert_eq!(jobs[1].job_type, "Part-Time (20-30 hrs/wk)");
+
+        assert_eq!(jobs[2].source_id, "999");
+        assert_eq!(jobs[2].title, "Data Engineer");
+        assert_eq!(jobs[2].job_type, "Contract");
+    }
+
+    #[test]
+    fn parse_bruntwork_job_details_uses_next_data_description() {
+        let html = r#"
+            <html><head>
+              <script id="__NEXT_DATA__" type="application/json">
+              {"props":{"pageProps":{"job":{
+                "description":"We are hiring a full-time SEO specialist working 40 hours per week.",
+                "jobType":"Full Time",
+                "publishedOn":"2026-04-10T00:00:00Z"
+              }}}}
+              </script>
+            </head><body>
+              <main>Published on Apr 10 2026</main>
+            </body></html>
+        "#;
+        let payload = parse_bruntwork_job_details(html).unwrap();
+        assert_eq!(payload.company, "BruntWork");
+        assert!(payload.description.contains("full-time SEO specialist"));
+        assert_eq!(payload.job_type, "Full-Time");
+        // posted_at is filled from __NEXT_DATA__ when present.
+        assert_eq!(payload.posted_at, "2026-04-10T00:00:00Z");
+    }
+
+    #[test]
+    fn parse_bruntwork_job_details_extracts_published_date_fallback() {
+        // No __NEXT_DATA__, no RSC — falls through to generic parser. The published
+        // date should still be extracted from the rendered "Published on …" text.
+        let html = r#"
+            <html><body>
+              <div>Published on Apr 10 2026</div>
+              <div class="job-description">
+                Long enough description to pass threshold: we are looking for a
+                skilled SEO professional with at least three years of experience.
+              </div>
+            </body></html>
+        "#;
+        let payload = parse_bruntwork_job_details(html).unwrap();
+        assert_eq!(payload.company, "BruntWork");
+        assert_eq!(payload.posted_at, "Apr 10 2026");
+        assert!(payload.description.contains("SEO professional"));
     }
 }
