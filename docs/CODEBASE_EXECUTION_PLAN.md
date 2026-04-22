@@ -356,8 +356,8 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 **If RETIRE SIDECAR**
 
 - [x] Prove Bruntwork search/details parity without scrapling.
-- [ ] Delete HTTP embedding and text-extraction fallback code.
-- [ ] Delete sidecar startup manager and sidecar docs once fallback parity is complete.
+- [x] Delete HTTP embedding and text-extraction fallback code.
+- [x] Delete sidecar startup manager and sidecar docs once fallback parity is complete.
 
 **Acceptance criteria**
 
@@ -405,7 +405,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - `services/scan_service.rs`
   - `services/ai_chat_service.rs`
   - `services/runtime_service.rs`
-- [ ] Retire sidecar-specific runtime code before extracting the runtime service:
+- [x] Retire sidecar-specific runtime code before extracting the runtime service:
   - remove HTTP `/embed` and `/extract-text` fallbacks from `sentence_service.rs`
   - remove scrapling HTTP fallbacks from `crawler/mod.rs`
   - delete `ai_service_manager.rs` and the `_ai_service` app state handle
@@ -422,7 +422,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 - [ ] `lib.rs` becomes a thin composition root.
 - [ ] AI chat routing, scan orchestration, and runtime startup each live in dedicated modules.
-- [ ] No production code starts or probes the Python sidecar.
+- [x] No production code starts or probes the Python sidecar.
 
 **Suggested commit sequence**
 
@@ -541,7 +541,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - native embedding cache/model defaults
   - timeout defaults
   - embedding model contract
-- [ ] Remove sidecar/scrapling URL settings from active runtime config after retirement.
+- [x] Remove sidecar/scrapling URL settings from active runtime config after retirement.
 - [ ] Stop mixing DB-backed config and hardcoded localhost assumptions without a defined precedence.
 - [ ] Create a real shared TS contract module for commonly reused shapes.
 - [ ] Move duplicated interfaces out of `App.tsx`, `SettingsPanel.tsx`, `JobsView.tsx`, `WatchlistView.tsx`, and `EzerView.tsx`.
@@ -582,8 +582,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 **Exact tasks**
 
 - [ ] Remove stale root-level Python assumptions from CI.
-- [ ] If the sidecar is kept, point CI at `ai_service/requirements.txt` and add actual service tests.
-- [ ] If the sidecar is retired, delete Python CI work that no longer validates shipped behavior.
+- [ ] Delete Python CI work that no longer validates shipped behavior.
 - [ ] Add explicit npm scripts for checks now hardcoded in CI, such as:
   - typecheck
   - frontend build smoke
@@ -607,7 +606,6 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 - `app/src/` test additions
 - `app/src-tauri/tests/`
-- `ai_service/` tests if sidecar remains
 
 **Exact tasks**
 
@@ -620,10 +618,6 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - embedding-model config enforcement
   - non-blocking startup diagnostics contract where practical
   - foreign key cascade cleanup
-- [ ] If sidecar remains, add endpoint tests for:
-  - `/health`
-  - `/extract-details`
-  - `/extract-search`
 - [ ] Extend the existing eval harness only after the runtime contract is stable.
 
 **Acceptance criteria**
@@ -643,7 +637,6 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 - `README.md`
 - `app/README.md`
-- `ai_service/README.md`
 - `config/keywords.yaml`
 - `TODO.md`
 

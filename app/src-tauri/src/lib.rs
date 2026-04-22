@@ -1,5 +1,4 @@
 pub mod ai;
-mod ai_service_manager;
 mod crawler;
 pub mod db;
 
@@ -9,7 +8,7 @@ use ai::prompts::{
     followup_resolution_schema, job_descriptions_response_schema, json_mode_system_suffix,
     system_prompt_for_job_chat, top_jobs_response_schema,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ai::ranking::{cosine_similarity, rank_embeddings_against_query};
 use ai::{
     AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage,
@@ -842,8 +841,17 @@ struct AppState {
     ollama: OllamaClient,
     sentence_service: SentenceServiceClient,
     crawl_lock: Mutex<()>,
-    _ai_service: ai_service_manager::ServiceHandle,
     webview_scraper: crawler::webview_scraper::WebviewScraperState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BackendDiagnostics {
+    state: String,
+    ready: bool,
+    embedding_model: String,
+    native_embedder_ready: bool,
+    embeddings_cache_dir: String,
+    runtime_mode: String,
 }
 
 async fn run_crawl_inner(
@@ -1023,10 +1031,8 @@ async fn fetch_job_details(
     let parsed_url = parse_allowed_job_url(&url)?;
     // For JS-rendered sites (currently Bruntwork), try the in-process
     // WebView scraper first. It reuses the WebView Tauri already ships
-    // with the app — no Python / Playwright / Chromium needed on the
-    // end-user machine. Falls through to the crawler's own fallback
-    // chain (static HTML + scrapling HTTP) if webview scraping doesn't
-    // produce a meaningful payload.
+    // with the app, then falls through to static HTML/RSC parsing if
+    // WebView scraping does not produce a meaningful payload.
     let mut webview_payload: Option<JobDetailsPayload> = None;
     if is_bruntwork_job_url(&parsed_url) {
         let timeout = std::time::Duration::from_secs(25);
@@ -2261,8 +2267,16 @@ async fn ai_start_scan_with_keywords(
 }
 
 #[tauri::command]
-fn backend_diagnostics() -> ai_service_manager::BackendDiagnostics {
-    ai_service_manager::snapshot()
+fn backend_diagnostics(state: State<'_, AppState>) -> BackendDiagnostics {
+    let native_embedder_ready = ai::native_embedder::is_ready();
+    BackendDiagnostics {
+        state: if native_embedder_ready { "ready".to_string() } else { "available".to_string() },
+        ready: true,
+        embedding_model: ai::SUPPORTED_EMBEDDING_MODEL.to_string(),
+        native_embedder_ready,
+        embeddings_cache_dir: state.sentence_service.cache_dir().to_string_lossy().to_string(),
+        runtime_mode: "native".to_string(),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2288,17 +2302,7 @@ pub fn run() {
                 .app_data_dir()
                 .map(|p| p.join("embeddings_cache"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("./embeddings_cache"));
-            let sentence_service = SentenceServiceClient::new(30_000, embeddings_cache_dir)
-                .map_err(|e| std::io::Error::other(format!("failed to init sentence service client: {e}")))?;
-            // Start the legacy Python sidecar fallback without waiting for
-            // readiness. Phase 3 removes this path after the sidecar retirement
-            // decision is applied in code.
-            let log_dir = app
-                .path()
-                .app_log_dir()
-                .or_else(|_| app.path().app_data_dir().map(|p| p.join("logs")))
-                .unwrap_or_else(|_| std::path::PathBuf::from("./logs"));
-            let ai_service = ai_service_manager::start(log_dir);
+            let sentence_service = SentenceServiceClient::new(30_000, embeddings_cache_dir);
             let webview_scraper = crawler::webview_scraper::WebviewScraperState::new();
             // Register the delivery state separately so the #[tauri::command]
             // scraper_webview_deliver can grab it via `tauri::State`.
@@ -2309,7 +2313,6 @@ pub fn run() {
                 ollama,
                 sentence_service,
                 crawl_lock: Mutex::new(()),
-                _ai_service: ai_service,
                 webview_scraper,
             });
             Ok(())

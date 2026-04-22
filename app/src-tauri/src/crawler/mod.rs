@@ -18,7 +18,6 @@ const CRAWL_DELAY: Duration = Duration::from_secs(5);
 const MAX_PAGES: usize = 5;
 const FETCH_MAX_ATTEMPTS: usize = 3;
 const FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(700);
-const SCRAPLING_BASE_URL_ENV: &str = "EZER_SCRAPLING_BASE_URL";
 const ALLOWED_JOB_HOSTS: &[&str] = &[
     "onlinejobs.ph",
     "www.onlinejobs.ph",
@@ -47,46 +46,6 @@ pub struct JobDetailsPayload {
 struct FetchAttemptError {
     message: String,
     retryable: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ScraplingSearchRequest {
-    url: String,
-    keyword: String,
-    html: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ScraplingSearchResponse {
-    jobs: Vec<ScraplingJob>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ScraplingJob {
-    source_id: Option<String>,
-    title: Option<String>,
-    company: Option<String>,
-    company_logo_url: Option<String>,
-    pay: Option<String>,
-    posted_at: Option<String>,
-    url: Option<String>,
-    summary: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ScraplingDetailsRequest {
-    url: String,
-    html: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ScraplingDetailsResponse {
-    company: Option<String>,
-    poster_name: Option<String>,
-    company_logo_url: Option<String>,
-    description: Option<String>,
-    description_html: Option<String>,
-    posted_at: Option<String>,
 }
 
 impl Crawler {
@@ -126,15 +85,6 @@ impl Crawler {
                     Vec::new()
                 }
             };
-
-            if jobs.is_empty() {
-                if let Some(fallback_jobs) = self
-                    .try_scrapling_search_fallback(&url, keyword, Some(&html))
-                    .await
-                {
-                    jobs = fallback_jobs;
-                }
-            }
 
             if jobs.is_empty() {
                 if let Some(err) = parse_error {
@@ -235,136 +185,10 @@ impl Crawler {
         Err(last_err)
     }
 
-    fn scrapling_base_url() -> Option<String> {
-        // Legacy sidecar fallback: defaults to the same host/port as the old
-        // ai_service (127.0.0.1:8765). Override with EZER_SCRAPLING_BASE_URL.
-        // If the service isn't running, HTTP calls will simply fail and the
-        // crawler falls back to its built-in parsers — no config needed.
-        let base = std::env::var(SCRAPLING_BASE_URL_ENV)
-            .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string());
-        let trimmed = base.trim().trim_end_matches('/').to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    }
-
-    async fn try_scrapling_search_fallback(
-        &self,
-        url: &str,
-        keyword: &str,
-        html: Option<&str>,
-    ) -> Option<Vec<Job>> {
-        let base = Self::scrapling_base_url()?;
-        let endpoint = format!("{base}/extract-search");
-        let payload = ScraplingSearchRequest {
-            url: url.to_string(),
-            keyword: keyword.to_string(),
-            html: html.map(|s| s.to_string()),
-        };
-        let resp = self.client.post(endpoint).json(&payload).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let data = resp.json::<ScraplingSearchResponse>().await.ok()?;
-        let now = Utc::now().to_rfc3339();
-        let mut jobs = Vec::new();
-        for row in data.jobs {
-            let title = row.title.unwrap_or_default();
-            let url = row.url.unwrap_or_default();
-            if title.trim().is_empty() || url.trim().is_empty() || !is_allowed_job_url(&url) {
-                continue;
-            }
-            let source_id = row.source_id.unwrap_or_else(|| {
-                url.rsplit('/').next().unwrap_or_default().to_string()
-            });
-            let summary = row.summary.map(|s| normalize_text(&s)).unwrap_or_default();
-            let job_type = infer_job_type(&title, &summary);
-            jobs.push(Job {
-                id: None,
-                source: "onlinejobs".to_string(),
-                source_id,
-                title: normalize_text(&title),
-                company: row.company.map(|s| normalize_text(&s)).unwrap_or_default(),
-                company_logo_url: row
-                    .company_logo_url
-                    .map(|s| normalize_asset_url(&s))
-                    .unwrap_or_default(),
-                pay: row.pay.map(|s| normalize_text(&s)).unwrap_or_default(),
-                posted_at: row.posted_at.map(|s| normalize_text(&s)).unwrap_or_default(),
-                url,
-                summary,
-                keyword: keyword.to_string(),
-                scraped_at: now.clone(),
-                is_new: true,
-                watchlisted: false,
-                run_id: None,
-                salary_min: None,
-                salary_max: None,
-                salary_currency: String::new(),
-                salary_period: String::new(),
-                applied: false,
-                job_type,
-            });
-        }
-        if jobs.is_empty() {
-            None
-        } else {
-            Some(jobs)
-        }
-    }
-
-    async fn try_scrapling_details_fallback(&self, url: &str, html: Option<&str>) -> Option<JobDetailsPayload> {
-        let base = Self::scrapling_base_url()?;
-        let endpoint = format!("{base}/extract-details");
-        let payload = ScraplingDetailsRequest {
-            url: url.to_string(),
-            html: html.map(|s| s.to_string()),
-        };
-        let resp = self.client.post(endpoint).json(&payload).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let data = resp.json::<ScraplingDetailsResponse>().await.ok()?;
-        let description = data.description.map(|s| normalize_text(&s)).unwrap_or_default();
-        let description_html = data.description_html.unwrap_or_default();
-        let text_for_inference = if description.is_empty() { &description_html } else { &description };
-        let job_type = infer_job_type("", text_for_inference);
-        Some(JobDetailsPayload {
-            company: data.company.map(|s| normalize_text(&s)).unwrap_or_default(),
-            poster_name: data.poster_name.map(|s| normalize_text(&s)).unwrap_or_default(),
-            company_logo_url: data
-                .company_logo_url
-                .map(|s| normalize_asset_url(&s))
-                .unwrap_or_default(),
-            description,
-            description_html,
-            job_type,
-            posted_at: data.posted_at.unwrap_or_default(),
-        })
-    }
-
     pub async fn fetch_job_details(&self, url: &str) -> Result<JobDetailsPayload, String> {
         let parsed_url = parse_allowed_job_url(url)?;
         let html = self.fetch_with_retry(url).await?;
         if is_bruntwork_job_url(&parsed_url) {
-            // Legacy fallback while Phase 3 retires the sidecar. The supported
-            // path is WebView first at the Tauri command layer, then static/RSC parsing.
-            if let Some(scrapled) = self.try_scrapling_details_fallback(url, None).await {
-                // Reject if scrapling returned RSC streaming garbage instead of real content
-                let has_garbage = is_rsc_garbage(&scrapled.description)
-                    || is_rsc_garbage(&scrapled.description_html);
-                if is_meaningful_job_details(&scrapled) && !has_garbage {
-                    let mut result = scrapled;
-                    if result.posted_at.is_empty() {
-                        result.posted_at = extract_bruntwork_published_date(&html);
-                    }
-                    return Ok(result);
-                }
-            }
-
-            // Try parsing the static HTML first (cheap).
             let mut payload = parse_bruntwork_job_details(&html)?;
 
             // If description is still empty, try fetching the RSC payload via the
@@ -392,72 +216,7 @@ impl Crawler {
         if is_meaningful_job_details(&parsed) {
             return Ok(parsed);
         }
-        if let Some(fallback) = self.try_scrapling_details_fallback(url, Some(&html)).await {
-            if is_meaningful_job_details(&fallback) {
-                return Ok(fallback);
-            }
-        }
         Ok(parsed)
-    }
-
-    /// Legacy scrapling fallback for Bruntwork: asks the sidecar to render the
-    /// Bruntwork search page with a headless browser and return job data.
-    async fn try_scrapling_bruntwork_fallback(&self) -> Option<Vec<Job>> {
-        let base = Self::scrapling_base_url()?;
-        let endpoint = format!("{base}/extract-search");
-        // Send without html so scrapling fetches fresh with a real browser.
-        let payload = ScraplingSearchRequest {
-            url: BRUNTWORK_SEARCH_URL.to_string(),
-            keyword: String::new(),
-            html: None,
-        };
-        let resp = self.client.post(endpoint).json(&payload).send().await.ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let data = resp.json::<ScraplingSearchResponse>().await.ok()?;
-        let now = Utc::now().to_rfc3339();
-        let mut jobs = Vec::new();
-        for row in data.jobs {
-            let url = row.url.unwrap_or_default();
-            if !url.contains("bruntworkcareers.co/jobs/") { continue; }
-            let title_raw = row.title.unwrap_or_default();
-            if title_raw.trim().is_empty() { continue; }
-            let source_id = url
-                .split("/jobs/").nth(1)
-                .and_then(|s| s.split('/').next())
-                .unwrap_or_default()
-                .to_string();
-            if source_id.is_empty() { continue; }
-            let (title, mut job_type) = split_bruntwork_title_type(&title_raw);
-            if job_type.is_empty() {
-                job_type = infer_job_type(&title, &row.summary.as_deref().unwrap_or(""));
-            }
-            jobs.push(Job {
-                id: None,
-                source: "bruntwork".to_string(),
-                source_id,
-                title,
-                company: "BruntWork".to_string(),
-                company_logo_url: String::new(),
-                pay: String::new(),
-                posted_at: row.posted_at.map(|s| normalize_text(&s)).unwrap_or_default(),
-                url,
-                summary: row.summary.map(|s| normalize_text(&s)).unwrap_or_default(),
-                keyword: String::new(),
-                scraped_at: now.clone(),
-                is_new: true,
-                watchlisted: false,
-                run_id: None,
-                salary_min: None,
-                salary_max: None,
-                salary_currency: String::new(),
-                salary_period: String::new(),
-                applied: false,
-                job_type,
-            });
-        }
-        if jobs.is_empty() { None } else { Some(jobs) }
     }
 
     /// Fetch all Bruntwork listings once and store those matching any keyword.
@@ -474,18 +233,11 @@ impl Crawler {
         let all_jobs = match html.as_deref().map(parse_bruntwork_search) {
             Some(Ok(jobs)) if !jobs.is_empty() => jobs,
             _ => {
-                // Plain HTTP returned nothing (JS-rendered page or blocked).
-                // Try scrapling which uses a real headless browser.
-                match self.try_scrapling_bruntwork_fallback().await {
-                    Some(jobs) if !jobs.is_empty() => jobs,
-                    _ => {
-                        let reason = html.as_deref()
-                            .map(|_| "parse returned 0 jobs")
-                            .unwrap_or("fetch failed");
-                        eprintln!("[bruntwork] {reason}, scrapling also empty or disabled");
-                        return Vec::new();
-                    }
-                }
+                let reason = html.as_deref()
+                    .map(|_| "parse returned 0 jobs")
+                    .unwrap_or("fetch failed");
+                eprintln!("[bruntwork] {reason}");
+                return Vec::new();
             }
         };
 

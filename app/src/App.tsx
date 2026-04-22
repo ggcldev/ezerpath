@@ -50,7 +50,6 @@ interface ConfirmDialogState {
 interface AiRuntimeConfig {
   ollama_base_url: string;
   ollama_model: string;
-  embedding_service_url: string;
   embedding_model: string;
   temperature: number;
   max_tokens: number;
@@ -65,27 +64,13 @@ interface EmbeddingIndexStatus {
   active_embedding_model: string;
 }
 
-type BackendStartupState =
-  | "not_started"
-  | "not_packaged"
-  | "spawning"
-  | "ready"
-  | "startup_failed"
-  | "timed_out";
-
 interface BackendDiagnostics {
-  state: BackendStartupState;
-  service_url: string;
-  reachable: boolean;
+  state: "available" | "ready";
   ready: boolean;
-  uvicorn_path: string | null;
-  cwd: string | null;
-  log_path: string | null;
-  startup_error: string | null;
-  child_pid: number | null;
-  started_at_ms: number | null;
-  ready_at_ms: number | null;
-  last_probe_at_ms: number | null;
+  embedding_model: string;
+  native_embedder_ready: boolean;
+  embeddings_cache_dir: string;
+  runtime_mode: "native";
 }
 
 interface ResumeProfileSummary {
@@ -122,7 +107,6 @@ function App() {
   const [aiConfig, setAiConfig] = createSignal<AiRuntimeConfig>({
     ollama_base_url: "http://127.0.0.1:11434",
     ollama_model: "qwen2.5:7b-instruct",
-    embedding_service_url: "http://127.0.0.1:8765",
     embedding_model: "all-MiniLM-L6-v2",
     temperature: 0.2,
     max_tokens: 1024,

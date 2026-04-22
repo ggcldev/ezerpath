@@ -1,8 +1,8 @@
 //! Native in-process sentence embedding using `fastembed` (ONNX Runtime).
 //!
-//! Replaces the Python sentence-transformers microservice. On first use, the
-//! model weights (~90MB for AllMiniLML6V2) are downloaded from HuggingFace and
-//! cached under the app data dir. Subsequent uses are offline.
+//! On first use, the model weights (~90MB for AllMiniLML6V2) are downloaded
+//! from HuggingFace and cached under the app data dir. Subsequent uses are
+//! offline.
 //!
 //! The underlying `TextEmbedding` handle is not `Send + Sync` safe across all
 //! operations; we wrap it in a `Mutex` and run `embed()` on a blocking thread

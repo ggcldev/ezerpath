@@ -22,10 +22,6 @@ A local-first desktop job-hunting copilot. Crawls job boards, stores everything 
 
 ---
 
-## Architecture decision
-
-As of 2026-04-22, the Python `ai_service/` sidecar is a legacy development fallback scheduled for retirement, not a production runtime dependency. The supported production path is native Rust/Tauri for embeddings, resume parsing, crawling, SQLite, and Ollama chat. Bruntwork fallback support should use the Rust static/RSC parsers and the Tauri WebView path rather than scrapling/Playwright.
-
 ## Architecture
 
 ```
@@ -139,9 +135,6 @@ ezerpath/
 │   │   ├── Cargo.toml
 │   │   └── tauri.conf.json
 │   └── package.json
-├── ai_service/                # Legacy Python sidecar fallback, pending retirement
-│   ├── server.py              # /embed, /extract-text, /health
-│   └── requirements.txt
 ├── config/keywords.yaml       # Crawler keyword config
 ├── data/                      # Crawl snapshots, raw HTML cache
 ├── reports/                   # Generated job reports
@@ -245,7 +238,6 @@ The signed bundle lands in `app/src-tauri/target/release/bundle/`.
 |---|---|---|
 | `ollama_base_url` | `http://127.0.0.1:11434` | Any Ollama-compatible endpoint works |
 | `ollama_model` | `qwen2.5:7b-instruct` | Use any model you've pulled |
-| `embedding_service_url` | `http://127.0.0.1:8765` | Legacy sidecar fallback setting, scheduled for removal |
 | `embedding_model` | `all-MiniLM-L6-v2` | Native embedding model, currently fixed to this value |
 | `temperature` | `0.2` | Low for deterministic ranking output |
 | `max_tokens` | `1024` | Per-reply generation cap |
@@ -339,8 +331,6 @@ cd app/src-tauri && cargo fmt
 | `app/` | `npx tauri dev` | Full dev loop (Vite + cargo run + window) |
 | `app/` | `npx tauri build` | Release bundle |
 | `app/` | `npm run dev` | Vite only (no Rust window) |
-| `ai_service/` | `uvicorn server:app --reload --port 8765` | Legacy sidecar fallback only, pending removal |
-
 ---
 
 ## Troubleshooting

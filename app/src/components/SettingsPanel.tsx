@@ -4,7 +4,6 @@ import { Moon, Sun, X } from "lucide-solid";
 interface AiRuntimeConfig {
   ollama_base_url: string;
   ollama_model: string;
-  embedding_service_url: string;
   embedding_model: string;
   temperature: number;
   max_tokens: number;
@@ -19,15 +18,12 @@ interface ResumeProfile {
 }
 
 interface BackendDiagnostics {
-  state: "not_started" | "not_packaged" | "spawning" | "ready" | "startup_failed" | "timed_out";
-  service_url: string;
-  reachable: boolean;
+  state: "available" | "ready";
   ready: boolean;
-  uvicorn_path: string | null;
-  cwd: string | null;
-  log_path: string | null;
-  startup_error: string | null;
-  child_pid: number | null;
+  embedding_model: string;
+  native_embedder_ready: boolean;
+  embeddings_cache_dir: string;
+  runtime_mode: "native";
 }
 
 interface SettingsPanelProps {
@@ -59,18 +55,10 @@ interface SettingsPanelProps {
 
 function formatBackendState(state: BackendDiagnostics["state"]) {
   switch (state) {
-    case "not_started":
-      return "Not started";
-    case "not_packaged":
-      return "Not packaged";
-    case "spawning":
-      return "Spawning";
+    case "available":
+      return "Available";
     case "ready":
       return "Ready";
-    case "startup_failed":
-      return "Startup failed";
-    case "timed_out":
-      return "Timed out";
   }
 }
 
@@ -205,14 +193,6 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                   </select>
                 </label>
                 <label class="text-[12px] text-mk-secondary">
-                  Embedding Service URL
-                  <input
-                    class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
-                    value={props.aiConfig.embedding_service_url}
-                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, embedding_service_url: e.currentTarget.value })}
-                  />
-                </label>
-                <label class="text-[12px] text-mk-secondary">
                   Embedding Model
                   <input
                     class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
@@ -325,18 +305,12 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                     <p class="text-[12px] font-semibold text-mk-text">Backend Diagnostics</p>
                     <p class="text-[12px] text-mk-secondary">
                       State: {formatBackendState(diag().state)}
-                      <Show when={diag().child_pid !== null}> · PID {diag().child_pid}</Show>
                     </p>
-                    <p class="text-[12px] text-mk-secondary">Service URL: {diag().service_url}</p>
-                    <Show when={diag().startup_error}>
-                      <p class="text-[12px] text-red-400">{diag().startup_error}</p>
-                    </Show>
-                    <Show when={diag().log_path}>
-                      <p class="text-[12px] text-mk-secondary">Log file: {diag().log_path}</p>
-                    </Show>
-                    <Show when={diag().uvicorn_path}>
-                      <p class="text-[12px] text-mk-secondary">Uvicorn: {diag().uvicorn_path}</p>
-                    </Show>
+                    <p class="text-[12px] text-mk-secondary">Embedding model: {diag().embedding_model}</p>
+                    <p class="text-[12px] text-mk-secondary">
+                      Native embedder: {diag().native_embedder_ready ? "Initialized" : "Loads on first use"}
+                    </p>
+                    <p class="text-[12px] text-mk-secondary">Cache: {diag().embeddings_cache_dir}</p>
                   </div>
                 )}
               </Show>

@@ -24,7 +24,6 @@ pub fn normalize_supported_embedding_model(raw: &str) -> Result<String, String> 
 pub struct AiRuntimeConfig {
     pub ollama_base_url: String,
     pub ollama_model: String,
-    pub embedding_service_url: String,
     pub embedding_model: String,
     pub temperature: f32,
     pub max_tokens: u32,
@@ -36,7 +35,6 @@ impl Default for AiRuntimeConfig {
         Self {
             ollama_base_url: "http://127.0.0.1:11434".to_string(),
             ollama_model: "qwen2.5:7b-instruct".to_string(),
-            embedding_service_url: "http://127.0.0.1:8765".to_string(),
             embedding_model: SUPPORTED_EMBEDDING_MODEL.to_string(),
             temperature: 0.2,
             max_tokens: 1024,

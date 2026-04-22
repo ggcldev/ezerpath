@@ -417,10 +417,6 @@ impl Database {
             params![defaults.ollama_model],
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_embedding_service_url', ?1)",
-            params![defaults.embedding_service_url],
-        )?;
-        conn.execute(
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ai_embedding_model', ?1)",
             params![defaults.embedding_model],
         )?;
@@ -1077,7 +1073,6 @@ impl Database {
         Ok(AiRuntimeConfig {
             ollama_base_url: get("ai_ollama_base_url").unwrap_or(default.ollama_base_url),
             ollama_model: get("ai_ollama_model").unwrap_or(default.ollama_model),
-            embedding_service_url: get("ai_embedding_service_url").unwrap_or(default.embedding_service_url),
             embedding_model: get("ai_embedding_model").unwrap_or(default.embedding_model),
             temperature: get("ai_temperature").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default.temperature),
             max_tokens: get("ai_max_tokens").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(default.max_tokens),
@@ -1102,7 +1097,6 @@ impl Database {
         };
         upsert("ai_ollama_base_url", cfg.ollama_base_url.clone())?;
         upsert("ai_ollama_model", cfg.ollama_model.clone())?;
-        upsert("ai_embedding_service_url", cfg.embedding_service_url.clone())?;
         upsert("ai_embedding_model", cfg.embedding_model.clone())?;
         upsert("ai_temperature", cfg.temperature.to_string())?;
         upsert("ai_max_tokens", cfg.max_tokens.to_string())?;

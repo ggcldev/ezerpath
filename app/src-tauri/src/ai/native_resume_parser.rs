@@ -1,4 +1,4 @@
-//! Native resume text extraction (replaces the Python ai_service /extract-text endpoint).
+//! Native resume text extraction for imported resume files.
 //!
 //! Dispatches on the file extension:
 //!   .pdf   → `pdf-extract` crate (pure-Rust text extraction)

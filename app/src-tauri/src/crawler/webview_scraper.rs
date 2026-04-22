@@ -1,8 +1,8 @@
 //! Headless WebView-based scraper for JS-rendered job pages.
 //!
-//! Instead of bundling a full headless browser (Playwright/Camoufox via
-//! Python scrapling), we reuse the WebView that Tauri already ships with
-//! the app (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux).
+//! Instead of bundling a full headless browser, we reuse the WebView that
+//! Tauri already ships with the app (WKWebView on macOS, WebView2 on Windows,
+//! WebKitGTK on Linux).
 //!
 //! Flow:
 //!   1. Caller invokes `scrape(app, state, url, timeout)`.
@@ -196,7 +196,7 @@ fn build_init_script(request_id: &str, ready_text_threshold: usize) -> String {
 ///
 /// On success, returns the outerHTML of the rendered document. On timeout
 /// or error, returns `Err`. The caller is expected to have a fallback
-/// strategy (static HTML parse or the scrapling HTTP service).
+/// strategy (static HTML or RSC parsing).
 pub async fn scrape<R: Runtime>(
     app: &AppHandle<R>,
     state: &WebviewScraperState,
