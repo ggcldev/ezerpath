@@ -1,16 +1,9 @@
 import { For, Show, Resource, type Component } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bot, CirclePlus, List, Settings2, Star, Trash2 } from "lucide-solid";
+import type { ScanRun } from "../types/ipc";
 
 export type View = "scan" | "jobs" | "watchlist" | "ezer";
-
-export interface ScanRun {
-  id: number;
-  started_at: string;
-  keywords: string;
-  total_found: number;
-  total_new: number;
-}
 
 interface SidebarProps {
   currentView: View;

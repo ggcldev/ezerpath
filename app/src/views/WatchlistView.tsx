@@ -5,25 +5,7 @@ import JobDetailsDrawer from "../components/JobDetailsDrawer";
 import { rowHoverEnter, rowHoverLeave } from "../utils/fluidHover";
 import { animateViewEnter } from "../utils/viewMotion";
 import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
-
-interface Job {
-  id: number;
-  source: string;
-  source_id: string;
-  title: string;
-  company: string;
-  company_logo_url: string;
-  pay: string;
-  posted_at: string;
-  url: string;
-  summary: string;
-  keyword: string;
-  scraped_at: string;
-  is_new: boolean;
-  watchlisted: boolean;
-  applied: boolean;
-  job_type: string;
-}
+import type { Job } from "../types/ipc";
 
 interface WatchlistViewProps {
   jobs: Resource<Job[]>;

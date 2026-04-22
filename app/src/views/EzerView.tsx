@@ -8,32 +8,7 @@ import { shouldApplyConversationResponse } from "../utils/conversationLoad";
 import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
 import toast from "solid-toast";
 import ConfirmModal from "../components/ConfirmModal";
-
-interface AiConversation {
-  id: number;
-  title: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface AiMessage {
-  id: number;
-  conversation_id: number;
-  role: "user" | "assistant" | "system";
-  content: string;
-  created_at: string;
-  meta_json: string;
-}
-
-interface AiJobCard {
-  job_id: number;
-  title: string;
-  company: string;
-  pay: string;
-  posted_at: string;
-  url: string;
-  logo_url: string;
-}
+import type { AiChatError, AiChatResponse, AiConversation, AiJobCard, AiMessage } from "../types/ipc";
 
 interface AiMessageMeta {
   provider?: string;
@@ -57,18 +32,6 @@ function errorBadgeLabel(code: string): string {
     default:
       return code;
   }
-}
-
-interface AiChatError {
-  code: string;
-  message: string;
-}
-
-interface AiChatResponse {
-  conversation_id: number;
-  reply: string;
-  cards?: AiJobCard[] | null;
-  error?: AiChatError | null;
 }
 
 interface ConfirmDialogState {

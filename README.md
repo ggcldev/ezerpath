@@ -41,12 +41,12 @@ A local-first desktop job-hunting copilot. Crawls job boards, stores everything 
 │  │  utils/  jobs.ts (scope filters) · mutations.ts (try/catch wrap)       │  │
 │  │          confirmations.ts · viewMotion.ts · fluidHover.ts              │  │
 │  │                                                                        │  │
-│  │  types/ipc-contract.ts   ◄── single source of truth, mirrors Rust      │  │
+│  │  types/ipc.ts            ◄── shared IPC types, mirrors Rust structs    │  │
 │  └────────────────────────────────┬───────────────────────────────────────┘  │
 │                                   │  @tauri-apps/api  invoke()               │
 │                                   ▼                                          │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │  Tauri IPC bridge ── 32 #[tauri::command] entry points (sync request/  │  │
+│  │  Tauri IPC bridge ── #[tauri::command] entry points (sync request/     │  │
 │  │  response; no event channels — scans block on the awaited promise)    │  │
 │  └────────────────────────────────┬───────────────────────────────────────┘  │
 │                                   ▼                                          │
@@ -120,7 +120,7 @@ ezerpath/
 │   ├── src/                   # SolidJS frontend
 │   │   ├── views/             # ScanView, JobsView, WatchlistView, EzerView
 │   │   ├── components/        # Sidebar, SettingsPanel, JobDetailsDrawer, …
-│   │   ├── types/             # ipc-contract.ts (mirrors Rust structs)
+│   │   ├── types/             # ipc.ts (shared IPC types mirrored from Rust)
 │   │   └── utils/             # jobs, mutations, confirmations, viewMotion, fluidHover
 │   ├── src-tauri/             # Rust backend
 │   │   ├── src/
@@ -304,7 +304,7 @@ Schema and migrations live in `app/src-tauri/src/db/mod.rs`.
 
 ## IPC commands
 
-The Rust core exposes 32 `#[tauri::command]` entry points covering jobs, watchlist, crawler runs, AI chat, embeddings, resume profiles, and settings. They're mirrored as TypeScript types in `app/src/types/ipc-contract.ts` so the frontend gets full autocompletion.
+The Rust core exposes `#[tauri::command]` entry points covering jobs, watchlist, crawler runs, AI chat, embeddings, resume profiles, and settings. Shared frontend IPC shapes live in `app/src/types/ipc.ts`.
 
 ---
 

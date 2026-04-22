@@ -1,33 +1,13 @@
 import { createSignal, createMemo, createResource, For, Show, Resource, Accessor, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { ScanRun } from "../components/Sidebar";
 import AnimatedNumber from "../components/AnimatedNumber";
 import JobDetailsDrawer from "../components/JobDetailsDrawer";
 import { getLatestRunId } from "../utils/jobs";
 import { rowHoverEnter, rowHoverLeave } from "../utils/fluidHover";
 import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
 import { animateViewEnter } from "../utils/viewMotion";
-
-interface Job {
-  id: number;
-  source: string;
-  source_id: string;
-  title: string;
-  company: string;
-  company_logo_url: string;
-  pay: string;
-  posted_at: string;
-  url: string;
-  summary: string;
-  keyword: string;
-  scraped_at: string;
-  is_new: boolean;
-  watchlisted: boolean;
-  run_id: number | null;
-  applied: boolean;
-  job_type: string;
-}
+import type { Job, JobFilterOptions, ScanRun } from "../types/ipc";
 
 interface JobsViewProps {
   runs: Resource<ScanRun[]>;
@@ -40,19 +20,6 @@ interface JobsViewProps {
 
 type PayRangeKey = "all" | "lt5" | "5_8" | "8_11" | "11_15" | "15_plus" | "unspecified";
 type ScanScopeKey = "all" | "latest";
-
-interface JobFacetCount {
-  value: string;
-  count: number;
-}
-
-interface JobFilterOptions {
-  keywords: JobFacetCount[];
-  sources: JobFacetCount[];
-  schedules: JobFacetCount[];
-  pay_ranges: JobFacetCount[];
-  latest_run_count: number;
-}
 
 function formatDate(raw: string): string {
   if (!raw) return "-";

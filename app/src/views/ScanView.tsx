@@ -6,24 +6,9 @@ import toast from "solid-toast";
 import AnimatedNumber from "../components/AnimatedNumber";
 import { runMutation } from "../utils/mutations";
 import { animateViewEnter } from "../utils/viewMotion";
-
-interface CrawlStats {
-  keyword: string;
-  found: number;
-  new: number;
-  pages: number;
-}
+import type { CrawlStats, ScanProgress } from "../types/ipc";
 
 const PAGES_PER_KEYWORD = 5;
-
-type ScanProgress =
-  | { kind: "started"; run_id: number; total_keywords: number; keywords: string[] }
-  | { kind: "keyword_started"; keyword: string; index: number; total: number }
-  | { kind: "page"; keyword: string; page: number; found: number }
-  | { kind: "keyword_completed"; keyword: string; found: number; new: number; pages: number }
-  | { kind: "completed"; run_id: number; total_found: number; total_new: number }
-  | { kind: "failed"; run_id: number; error: string }
-  | { kind: "bruntwork_keyword"; keyword: string; found: number; new: number };
 
 interface ProgressSnapshot {
   totalKeywords: number;

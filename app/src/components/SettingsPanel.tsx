@@ -1,30 +1,8 @@
 import { For, Show } from "solid-js";
 import { Moon, Sun, X } from "lucide-solid";
+import type { AiRuntimeConfig, BackendDiagnostics, ResumeProfileSummary } from "../types/ipc";
 
-interface AiRuntimeConfig {
-  ollama_base_url: string;
-  ollama_model: string;
-  embedding_model: string;
-  temperature: number;
-  max_tokens: number;
-  timeout_ms: number;
-}
-
-interface ResumeProfile {
-  id: number;
-  name: string;
-  source_file: string;
-  is_active: boolean;
-}
-
-interface BackendDiagnostics {
-  state: "available" | "ready";
-  ready: boolean;
-  embedding_model: string;
-  native_embedder_ready: boolean;
-  embeddings_cache_dir: string;
-  runtime_mode: "native";
-}
+type ResumeProfile = Pick<ResumeProfileSummary, "id" | "name" | "source_file" | "is_active">;
 
 interface SettingsPanelProps {
   open: boolean;

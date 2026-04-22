@@ -1,6 +1,6 @@
 import { createSignal, createResource, createEffect, Match, Switch, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
+import Sidebar, { type View } from "./components/Sidebar";
 import ConfirmModal from "./components/ConfirmModal";
 import SettingsPanel from "./components/SettingsPanel";
 import ScanView from "./views/ScanView";
@@ -9,35 +9,10 @@ import WatchlistView from "./views/WatchlistView";
 import EzerView from "./views/EzerView";
 import { runMutation } from "./utils/mutations";
 import { loadWatchlistJobs } from "./utils/watchlist";
+import type { AiRuntimeConfig, BackendDiagnostics, CrawlStats, EmbeddingIndexStatus, Job, ResumeProfileSummary, ScanRun } from "./types/ipc";
+import { DEFAULT_AI_RUNTIME_CONFIG } from "./types/ipc";
 import toast, { Toaster } from "solid-toast";
 import "./App.css";
-
-interface Job {
-  id: number;
-  source: string;
-  source_id: string;
-  title: string;
-  company: string;
-  company_logo_url: string;
-  pay: string;
-  posted_at: string;
-  url: string;
-  summary: string;
-  keyword: string;
-  scraped_at: string;
-  is_new: boolean;
-  watchlisted: boolean;
-  run_id: number | null;
-  applied: boolean;
-  job_type: string;
-}
-
-interface CrawlStats {
-  keyword: string;
-  found: number;
-  new: number;
-  pages: number;
-}
 
 interface ConfirmDialogState {
   title: string;
@@ -45,41 +20,6 @@ interface ConfirmDialogState {
   confirmText: string;
   destructive?: boolean;
   onConfirm: () => Promise<void>;
-}
-
-interface AiRuntimeConfig {
-  ollama_base_url: string;
-  ollama_model: string;
-  embedding_model: string;
-  temperature: number;
-  max_tokens: number;
-  timeout_ms: number;
-}
-
-interface EmbeddingIndexStatus {
-  jobs_total: number;
-  jobs_indexed: number;
-  resumes_total: number;
-  resumes_indexed: number;
-  active_embedding_model: string;
-}
-
-interface BackendDiagnostics {
-  state: "available" | "ready";
-  ready: boolean;
-  embedding_model: string;
-  native_embedder_ready: boolean;
-  embeddings_cache_dir: string;
-  runtime_mode: "native";
-}
-
-interface ResumeProfileSummary {
-  id: number;
-  name: string;
-  source_file: string;
-  created_at: string;
-  updated_at: string;
-  is_active: boolean;
 }
 
 function App() {
@@ -107,14 +47,7 @@ function App() {
   const [selectedResumeId, setSelectedResumeId] = createSignal<number | null>(null);
   const [resumeStatus, setResumeStatus] = createSignal("");
   const [backendDiagnostics, setBackendDiagnostics] = createSignal<BackendDiagnostics | null>(null);
-  const [aiConfig, setAiConfig] = createSignal<AiRuntimeConfig>({
-    ollama_base_url: "http://127.0.0.1:11434",
-    ollama_model: "qwen2.5:7b-instruct",
-    embedding_model: "all-MiniLM-L6-v2",
-    temperature: 0.2,
-    max_tokens: 1024,
-    timeout_ms: 30000,
-  });
+  const [aiConfig, setAiConfig] = createSignal<AiRuntimeConfig>(DEFAULT_AI_RUNTIME_CONFIG);
 
   const toggleTheme = () => {
     setDark((v) => !v);

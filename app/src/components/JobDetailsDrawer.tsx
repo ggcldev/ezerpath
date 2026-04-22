@@ -1,6 +1,7 @@
 import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { Building2, CalendarDays, Copy, ExternalLink, Tag, Wallet, X } from "lucide-solid";
+import type { JobDetailsPayload } from "../types/ipc";
 
 interface JobDetails {
   title: string;
@@ -20,14 +21,7 @@ interface JobDetailsDrawerProps {
   onOpenUrl: (url: string) => void;
 }
 
-interface CrawledJobDetails {
-  company: string;
-  poster_name: string;
-  company_logo_url: string;
-  description: string;
-  description_html: string;
-  posted_at: string;
-}
+type CrawledJobDetails = JobDetailsPayload;
 
 function formatPosted(raw: string): string {
   if (!raw) return "-";

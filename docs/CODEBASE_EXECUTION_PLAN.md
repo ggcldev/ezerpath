@@ -525,7 +525,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P3.5 - Centralize runtime config and typed IPC contracts
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -537,26 +537,26 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 **Exact tasks**
 
-- [ ] Define one runtime-config source of truth for:
-  - Ollama base URL
-  - native embedding cache/model defaults
-  - timeout defaults
-  - embedding model contract
+- [x] Define one runtime-config source of truth for:
+  - [x] Ollama base URL
+  - [x] native embedding cache/model defaults
+  - [x] timeout defaults
+  - [x] embedding model contract
 - [x] Remove sidecar/scrapling URL settings from active runtime config after retirement.
-- [ ] Stop mixing DB-backed config and hardcoded localhost assumptions without a defined precedence.
-- [ ] Create a real shared TS contract module for commonly reused shapes.
-- [ ] Move duplicated interfaces out of `App.tsx`, `SettingsPanel.tsx`, `JobsView.tsx`, `WatchlistView.tsx`, and `EzerView.tsx`.
-- [ ] If generation is feasible, document and adopt it; otherwise centralize the handwritten contract first.
+- [x] Stop mixing DB-backed config and hardcoded localhost assumptions without a defined precedence.
+- [x] Create a real shared TS contract module for commonly reused shapes.
+- [x] Move duplicated interfaces out of `App.tsx`, `SettingsPanel.tsx`, `JobsView.tsx`, `WatchlistView.tsx`, and `EzerView.tsx`.
+- [x] If generation is feasible, document and adopt it; otherwise centralize the handwritten contract first.
 
 **Acceptance criteria**
 
-- [ ] Runtime defaults match across Rust and frontend.
-- [ ] README no longer references a missing `ipc-contract.ts`.
-- [ ] Shared TS shapes are imported from one module.
+- [x] Runtime defaults match across Rust and frontend.
+- [x] README no longer references a missing `ipc-contract.ts`.
+- [x] Shared TS shapes are imported from one module.
 
 **Suggested commit**
 
-- `refactor(contract): centralize runtime config and shared IPC types`
+- `refactor(contract): centralize runtime config and shared IPC types` (`DONE`)
 
 ---
 
@@ -644,7 +644,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 **Exact tasks**
 
 - [ ] Update the root README architecture section to describe the chosen runtime architecture.
-- [ ] Remove references to missing files such as `app/src/types/ipc-contract.ts`.
+- [x] Remove references to missing files such as `app/src/types/ipc-contract.ts`.
 - [ ] Replace the stock `app/README.md` with project-specific guidance or delete it if redundant.
 - [ ] Decide whether `config/keywords.yaml` is real configuration:
   - wire it into bootstrapping, or
