@@ -1198,26 +1198,29 @@ mod tests {
 
     #[test]
     fn duplicate_job_updates_to_latest_run_id() {
-        let tmp = tempdir().expect("tempdir");
-        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db = Database::new(tmp.path().to_path_buf())
+            .expect("Database::new failed on fresh tempdir");
 
         let run1 = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
-            .expect("run1");
+            .expect("insert_run for run1 failed");
         let inserted_first = db
             .insert_job(&mk_job("123", Utc::now().to_rfc3339()), run1)
-            .expect("insert first");
+            .expect("first insert_job(source_id=123) failed");
         assert!(inserted_first);
 
         let run2 = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
-            .expect("run2");
+            .expect("insert_run for run2 failed");
         let inserted_second = db
             .insert_job(&mk_job("123", Utc::now().to_rfc3339()), run2)
-            .expect("insert second");
+            .expect("second insert_job(source_id=123) failed — expected update path");
         assert!(!inserted_second);
 
-        let jobs = db.get_jobs(None, false, None).expect("jobs");
+        let jobs = db
+            .get_jobs(None, false, None)
+            .expect("get_jobs after duplicate insert failed");
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].run_id, Some(run2));
         assert!(!jobs[0].is_new);
@@ -1225,62 +1228,73 @@ mod tests {
 
     #[test]
     fn days_filter_excludes_old_rows_with_julianday_comparison() {
-        let tmp = tempdir().expect("tempdir");
-        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db = Database::new(tmp.path().to_path_buf())
+            .expect("Database::new failed on fresh tempdir");
         let run = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
-            .expect("run");
+            .expect("insert_run failed");
 
         let recent = mk_job("recent", Utc::now().to_rfc3339());
         let old = mk_job("old", (Utc::now() - Duration::days(5)).to_rfc3339());
-        db.insert_job(&recent, run).expect("insert recent");
-        db.insert_job(&old, run).expect("insert old");
+        db.insert_job(&recent, run)
+            .expect("insert_job for 'recent' fixture failed");
+        db.insert_job(&old, run)
+            .expect("insert_job for 'old' fixture failed");
 
-        let filtered = db.get_jobs(None, false, Some(1)).expect("filtered");
+        let filtered = db
+            .get_jobs(None, false, Some(1))
+            .expect("get_jobs with days=Some(1) filter failed");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].source_id, "recent");
     }
 
     #[test]
     fn get_jobs_by_ids_preserves_input_order() {
-        let tmp = tempdir().expect("tempdir");
-        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db = Database::new(tmp.path().to_path_buf())
+            .expect("Database::new failed on fresh tempdir");
         let run = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
-            .expect("run");
+            .expect("insert_run failed");
 
         let mut a = mk_job("one", (Utc::now() - Duration::days(2)).to_rfc3339());
         a.title = "Job One".to_string();
-        db.insert_job(&a, run).expect("insert one");
+        db.insert_job(&a, run)
+            .expect("insert_job for 'one' fixture failed");
 
         let mut b = mk_job("two", Utc::now().to_rfc3339());
         b.title = "Job Two".to_string();
-        db.insert_job(&b, run).expect("insert two");
+        db.insert_job(&b, run)
+            .expect("insert_job for 'two' fixture failed");
 
         let mut c = mk_job("three", (Utc::now() - Duration::days(1)).to_rfc3339());
         c.title = "Job Three".to_string();
-        db.insert_job(&c, run).expect("insert three");
+        db.insert_job(&c, run)
+            .expect("insert_job for 'three' fixture failed");
 
-        let jobs = db.get_jobs(None, false, None).expect("jobs");
+        let jobs = db
+            .get_jobs(None, false, None)
+            .expect("get_jobs(all) failed while resolving fixture ids");
         let id_one = jobs
             .iter()
             .find(|j| j.source_id == "one")
             .and_then(|j| j.id)
-            .expect("id one");
+            .expect("fixture 'one' missing id after insert");
         let id_two = jobs
             .iter()
             .find(|j| j.source_id == "two")
             .and_then(|j| j.id)
-            .expect("id two");
+            .expect("fixture 'two' missing id after insert");
         let id_three = jobs
             .iter()
             .find(|j| j.source_id == "three")
             .and_then(|j| j.id)
-            .expect("id three");
+            .expect("fixture 'three' missing id after insert");
 
         let ordered = db
             .get_jobs_by_ids(&[id_two, id_one, id_three])
-            .expect("ordered jobs");
+            .expect("get_jobs_by_ids failed for [two, one, three]");
         let ordered_ids: Vec<i64> = ordered.into_iter().filter_map(|j| j.id).collect();
         assert_eq!(ordered_ids, vec![id_two, id_one, id_three]);
     }
