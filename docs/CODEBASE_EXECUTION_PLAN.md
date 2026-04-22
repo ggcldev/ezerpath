@@ -402,7 +402,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - `commands/ai.rs`
   - `commands/settings.rs`
 - [ ] Create service modules:
-  - `services/scan_service.rs`
+  - [x] `services/scan_service.rs`
   - `services/ai_chat_service.rs`
   - `services/runtime_service.rs`
 - [x] Retire sidecar-specific runtime code before extracting the runtime service:
@@ -427,7 +427,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 **Suggested commit sequence**
 
 - `refactor(runtime): retire python sidecar fallbacks`
-- `refactor(backend): extract scan service from lib.rs`
+- `refactor(backend): extract scan service from lib.rs` (`DONE`)
 - `refactor(backend): extract ai chat service from lib.rs`
 - `refactor(backend): extract runtime startup service from lib.rs`
 

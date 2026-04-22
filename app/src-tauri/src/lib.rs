@@ -1,6 +1,7 @@
 pub mod ai;
 mod crawler;
 pub mod db;
+mod services;
 
 use ai::ollama::OllamaClient;
 use ai::ollama::ChatMessage;
@@ -854,124 +855,6 @@ struct BackendDiagnostics {
     runtime_mode: String,
 }
 
-async fn run_crawl_inner(
-    state: &AppState,
-    days: Option<u32>,
-    sources: Option<&[String]>,
-    on_progress: Option<&Channel<ScanProgress>>,
-) -> Result<Vec<CrawlStats>, String> {
-    let scan_onlinejobs = sources.map_or(true, |s| s.iter().any(|x| x == "onlinejobs"));
-    let scan_bruntwork  = sources.map_or(true, |s| s.iter().any(|x| x == "bruntwork"));
-    let _crawl_guard = state
-        .crawl_lock
-        .try_lock()
-        .map_err(|_| "A scan is already in progress".to_string())?;
-
-    let date_days = days.unwrap_or(3);
-    let keywords = state.db.get_keywords().map_err(|e| e.to_string())?;
-
-    let started_at = chrono::Utc::now().to_rfc3339();
-    let keywords_str = keywords.join(", ");
-    let run_id = state
-        .db
-        .insert_run(&keywords_str, &started_at)
-        .map_err(|e| e.to_string())?;
-
-    if let Some(ch) = on_progress {
-        let _ = ch.send(ScanProgress::Started {
-            run_id,
-            total_keywords: keywords.len(),
-            keywords: keywords.clone(),
-        });
-    }
-
-    let mut all_stats: Vec<CrawlStats> = Vec::new();
-    let mut total_found: i64 = 0;
-    let mut total_new: i64 = 0;
-
-    if scan_onlinejobs {
-        for (idx, kw) in keywords.iter().enumerate() {
-            if let Some(ch) = on_progress {
-                let _ = ch.send(ScanProgress::KeywordStarted {
-                    keyword: kw.clone(),
-                    index: idx,
-                    total: keywords.len(),
-                });
-            }
-
-            match state
-                .crawler
-                .crawl_keyword(kw, &state.db, date_days, run_id, on_progress)
-                .await
-            {
-                Ok(stats) => {
-                    total_found += stats.found as i64;
-                    total_new += stats.new as i64;
-
-                    if let Some(ch) = on_progress {
-                        let _ = ch.send(ScanProgress::KeywordCompleted {
-                            keyword: kw.clone(),
-                            found: stats.found,
-                            new: stats.new,
-                            pages: stats.pages,
-                        });
-                    }
-
-                    all_stats.push(stats);
-                }
-                Err(err) => {
-                    let finished_at = chrono::Utc::now().to_rfc3339();
-                    if let Err(mark_err) =
-                        state.db.fail_run(run_id, total_found, total_new, &err, &finished_at)
-                    {
-                        let combined = format!("{err} (failed to mark run failed: {mark_err})");
-                        if let Some(ch) = on_progress {
-                            let _ = ch.send(ScanProgress::Failed {
-                                run_id,
-                                error: combined.clone(),
-                            });
-                        }
-                        return Err(combined);
-                    }
-                    if let Some(ch) = on_progress {
-                        let _ = ch.send(ScanProgress::Failed {
-                            run_id,
-                            error: err.clone(),
-                        });
-                    }
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    // Bruntwork: single fetch, filtered per keyword, non-fatal.
-    if scan_bruntwork {
-        let bw_stats = state.crawler.crawl_bruntwork(&keywords, &state.db, run_id, on_progress).await;
-        for s in &bw_stats {
-            total_found += s.found as i64;
-            total_new += s.new as i64;
-        }
-        all_stats.extend(bw_stats);
-    }
-
-    let finished_at = chrono::Utc::now().to_rfc3339();
-    state
-        .db
-        .complete_run(run_id, total_found, total_new, &finished_at)
-        .map_err(|e| e.to_string())?;
-
-    if let Some(ch) = on_progress {
-        let _ = ch.send(ScanProgress::Completed {
-            run_id,
-            total_found,
-            total_new,
-        });
-    }
-
-    Ok(all_stats)
-}
-
 #[tauri::command]
 async fn crawl_jobs(
     state: State<'_, AppState>,
@@ -979,7 +862,15 @@ async fn crawl_jobs(
     sources: Option<Vec<String>>,
     on_progress: Channel<ScanProgress>,
 ) -> Result<Vec<CrawlStats>, String> {
-    run_crawl_inner(state.inner(), days, sources.as_deref(), Some(&on_progress)).await
+    services::scan_service::run_crawl(
+        &state.db,
+        &state.crawler,
+        &state.crawl_lock,
+        days,
+        sources.as_deref(),
+        Some(&on_progress),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2263,7 +2154,15 @@ async fn ai_start_scan_with_keywords(
     for kw in &keywords {
         state.db.add_keyword(kw).map_err(|e| e.to_string())?;
     }
-    run_crawl_inner(state.inner(), days, None, None).await
+    services::scan_service::run_crawl(
+        &state.db,
+        &state.crawler,
+        &state.crawl_lock,
+        days,
+        None,
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
