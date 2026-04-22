@@ -382,7 +382,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P3.1 - Split backend command adapters from services
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -396,12 +396,12 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 **Exact tasks**
 
-- [ ] Create thin command modules:
-  - `commands/jobs.rs`
-  - `commands/scan.rs`
-  - `commands/ai.rs`
-  - `commands/settings.rs`
-- [ ] Create service modules:
+- [x] Create thin command modules:
+  - [x] `commands/jobs.rs`
+  - [x] `commands/scan.rs`
+  - [x] `commands/ai.rs`
+  - [x] `commands/settings.rs`
+- [x] Create service modules:
   - [x] `services/scan_service.rs`
   - [x] `services/ai_chat_service.rs`
   - [x] `services/runtime_service.rs`
@@ -410,18 +410,18 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - remove scrapling HTTP fallbacks from `crawler/mod.rs`
   - delete `ai_service_manager.rs` and the `_ai_service` app state handle
   - delete or archive `ai_service/` after README/CI no longer reference it as active runtime
-- [ ] Move business logic out of `lib.rs`; keep `lib.rs` focused on:
+- [x] Move business logic out of `lib.rs`; keep `lib.rs` focused on:
   - module wiring
   - `AppState`
   - Tauri plugin setup
   - handler registration
-- [ ] Preserve existing command names to avoid frontend churn during the split.
-- [ ] Add or update tests for moved service-layer functions before deleting old code.
+- [x] Preserve existing command names to avoid frontend churn during the split.
+- [x] Add or update tests for moved service-layer functions before deleting old code.
 
 **Acceptance criteria**
 
-- [ ] `lib.rs` becomes a thin composition root.
-- [ ] AI chat routing, scan orchestration, and runtime startup each live in dedicated modules.
+- [x] `lib.rs` becomes a thin composition root.
+- [x] AI chat routing, scan orchestration, and runtime startup each live in dedicated modules.
 - [x] No production code starts or probes the Python sidecar.
 
 **Suggested commit sequence**
@@ -430,6 +430,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 - `refactor(backend): extract scan service from lib.rs` (`DONE`)
 - `refactor(backend): extract ai chat service from lib.rs` (`DONE`)
 - `refactor(backend): extract runtime startup service from lib.rs` (`DONE`)
+- `refactor(backend): split tauri command modules` (`DONE`)
 
 ### P3.2 - Replace broad frontend invalidation with explicit resources
 
