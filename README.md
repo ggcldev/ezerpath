@@ -263,12 +263,13 @@ The signed bundle lands in `app/src-tauri/target/release/bundle/`.
 | `ollama_base_url` | `http://127.0.0.1:11434` | Any Ollama-compatible endpoint works |
 | `ollama_model` | `qwen2.5:7b-instruct` | Use any model you've pulled |
 | `embedding_service_url` | `http://127.0.0.1:8765` | The Python sidecar |
-| `embedding_model` | `all-MiniLM-L6-v2` | Sentence-transformers model |
+| `embedding_model` | `all-MiniLM-L6-v2` | Native embedding model, currently fixed to this value |
 | `temperature` | `0.2` | Low for deterministic ranking output |
 | `max_tokens` | `1024` | Per-reply generation cap |
 | `timeout_ms` | `120_000` | **Idle-gap budget**, not total time |
 
 All settings live in the SQLite DB and are editable from the in-app **Settings** panel.
+The embedding model is currently locked to the native `all-MiniLM-L6-v2` path until multi-model native support exists.
 
 ---
 

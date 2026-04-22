@@ -68,7 +68,7 @@ impl SentenceServiceClient {
         let url = format!("{}/embed", cfg.embedding_service_url.trim_end_matches('/'));
         let req = EmbedRequest {
             texts,
-            model: cfg.embedding_model.clone(),
+            model: cfg.effective_embedding_model().to_string(),
         };
         let resp = self
             .client
@@ -94,7 +94,7 @@ impl SentenceServiceClient {
             return Ok(EmbeddingHealth {
                 ok: true,
                 message: "Native ONNX embedder ready".to_string(),
-                model_name: "all-MiniLM-L6-v2 (native)".to_string(),
+                model_name: cfg.effective_embedding_model().to_string(),
             });
         }
 
@@ -109,7 +109,7 @@ impl SentenceServiceClient {
                 Some(true) => "Native embedder not yet initialized; HTTP fallback reachable".to_string(),
                 _ => "Native embedder not yet initialized (will load on first use)".to_string(),
             },
-            model_name: cfg.embedding_model.clone(),
+            model_name: cfg.effective_embedding_model().to_string(),
         })
     }
 

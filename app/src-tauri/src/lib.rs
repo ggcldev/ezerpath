@@ -13,16 +13,20 @@ use serde::Deserialize;
 use ai::ranking::{cosine_similarity, rank_embeddings_against_query};
 use ai::{
     AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage,
-    AiRuntimeConfig,
-    EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult, ResumeProfile,
+    AiRuntimeConfig, EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult,
+    ResumeProfileSummary,
 };
 use ai::sentence_service::SentenceServiceClient;
-use crawler::{Crawler, CrawlStats, JobDetailsPayload, ScanProgress};
+use crawler::{
+    is_bruntwork_job_url, parse_allowed_job_url, Crawler, CrawlStats, JobDetailsPayload,
+    ScanProgress,
+};
 use db::{parse_pay, AiRunLog, Database, Job, ScanRun};
 use std::cmp::Ordering;
 use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 
 // ── JSON-mode response shapes (phase #4) ───────────────────────────────────
@@ -487,9 +491,11 @@ async fn semantic_search_fallback(
     if limit == 0 {
         return Ok(Vec::new());
     }
+    // Native embeddings currently support one canonical model namespace only.
+    let embedding_model = cfg.effective_embedding_model();
     let rows = state
         .db
-        .list_job_embeddings(&cfg.embedding_model)
+        .list_job_embeddings(embedding_model)
         .map_err(|e| e.to_string())?;
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -1004,11 +1010,17 @@ async fn get_jobs(state: State<'_, AppState>, keyword: Option<String>, watchlist
 }
 
 #[tauri::command]
+async fn get_watchlisted_jobs(state: State<'_, AppState>) -> Result<Vec<Job>, String> {
+    state.db.get_watchlisted_jobs().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn fetch_job_details(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     url: String,
 ) -> Result<JobDetailsPayload, String> {
+    let parsed_url = parse_allowed_job_url(&url)?;
     // For JS-rendered sites (currently Bruntwork), try the in-process
     // WebView scraper first. It reuses the WebView Tauri already ships
     // with the app — no Python / Playwright / Chromium needed on the
@@ -1016,7 +1028,7 @@ async fn fetch_job_details(
     // chain (static HTML + scrapling HTTP) if webview scraping doesn't
     // produce a meaningful payload.
     let mut webview_payload: Option<JobDetailsPayload> = None;
-    if url.contains("bruntworkcareers.co") {
+    if is_bruntwork_job_url(&parsed_url) {
         let timeout = std::time::Duration::from_secs(25);
         match crawler::webview_scraper::scrape(&app, &state.webview_scraper, &url, timeout).await {
             Ok(result) => {
@@ -1091,6 +1103,7 @@ async fn get_ai_runtime_config(state: State<'_, AppState>) -> Result<AiRuntimeCo
 
 #[tauri::command]
 async fn set_ai_runtime_config(state: State<'_, AppState>, config: AiRuntimeConfig) -> Result<(), String> {
+    let config = config.validated()?;
     state.db.set_ai_runtime_config(&config).map_err(|e| e.to_string())
 }
 
@@ -1112,31 +1125,82 @@ async fn ai_embedding_health_check(state: State<'_, AppState>) -> Result<Embeddi
     state.sentence_service.health_check(&cfg).await
 }
 
-#[tauri::command]
-async fn upload_resume(
-    state: State<'_, AppState>,
-    name: String,
-    source_file: Option<String>,
-    raw_text: String,
-) -> Result<ResumeProfile, String> {
-    let normalized_text = raw_text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let now = chrono::Utc::now().to_rfc3339();
-    state
-        .db
-        .save_resume_profile(&name, source_file.as_deref(), &raw_text, &normalized_text, &now)
-        .map_err(|e| e.to_string())
+fn resume_import_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?
+        .join("resume_imports");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create resume import dir: {e}"))?;
+    Ok(dir)
 }
 
-#[tauri::command]
-async fn upload_resume_from_file(
-    state: State<'_, AppState>,
+fn sanitize_resume_file_component(raw: &str) -> String {
+    let cleaned = raw
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => ch,
+            _ => '-',
+        })
+        .collect::<String>();
+    let cleaned = cleaned.trim_matches('-');
+    if cleaned.is_empty() {
+        "resume".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn import_resume_file(app: &tauri::AppHandle, file_path: &str) -> Result<std::path::PathBuf, String> {
+    let source = std::path::PathBuf::from(file_path);
+    let metadata = std::fs::symlink_metadata(&source)
+        .map_err(|e| format!("failed to read resume file metadata: {e}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Resume import does not allow symlinks.".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("Resume import expects a regular file.".to_string());
+    }
+
+    let ext = source
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| "Unsupported resume file type. Supported: .pdf, .docx, .txt".to_string())?;
+    if !matches!(ext.as_str(), "pdf" | "docx" | "txt") {
+        return Err("Unsupported resume file type. Supported: .pdf, .docx, .txt".to_string());
+    }
+
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(sanitize_resume_file_component)
+        .unwrap_or_else(|| "resume".to_string());
+    let imported_name = format!(
+        "{}-{}.{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        stem,
+        ext
+    );
+    let destination = resume_import_dir(app)?.join(imported_name);
+    std::fs::copy(&source, &destination)
+        .map_err(|e| format!("failed to import resume file: {e}"))?;
+    Ok(destination)
+}
+
+async fn save_imported_resume_from_path(
+    app: &tauri::AppHandle,
+    state: &AppState,
     file_path: String,
     display_name: Option<String>,
-) -> Result<ResumeProfile, String> {
+) -> Result<ResumeProfileSummary, String> {
+    let imported_path = import_resume_file(app, &file_path)?;
+    let imported_path_string = imported_path.to_string_lossy().to_string();
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
     let extracted = state
         .sentence_service
-        .extract_text_from_file(&cfg, file_path.clone())
+        .extract_text_from_file(&cfg, imported_path_string.clone())
         .await?;
     let normalized_text = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
     let now = chrono::Utc::now().to_rfc3339();
@@ -1147,15 +1211,63 @@ async fn upload_resume_from_file(
             .unwrap_or("Resume")
             .to_string()
     });
-    state
+    let profile = state
         .db
-        .save_resume_profile(&name, Some(file_path.as_str()), &extracted, &normalized_text, &now)
-        .map_err(|e| e.to_string())
+        .save_resume_profile(
+            &name,
+            Some(imported_path_string.as_str()),
+            &extracted,
+            &normalized_text,
+            &now,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(profile.summary())
 }
 
 #[tauri::command]
-async fn list_resumes(state: State<'_, AppState>) -> Result<Vec<ResumeProfile>, String> {
-    state.db.list_resume_profiles().map_err(|e| e.to_string())
+async fn upload_resume(
+    state: State<'_, AppState>,
+    name: String,
+    source_file: Option<String>,
+    raw_text: String,
+) -> Result<ResumeProfileSummary, String> {
+    let normalized_text = raw_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let now = chrono::Utc::now().to_rfc3339();
+    let profile = state
+        .db
+        .save_resume_profile(&name, source_file.as_deref(), &raw_text, &normalized_text, &now)
+        .map_err(|e| e.to_string())?;
+    Ok(profile.summary())
+}
+
+#[tauri::command]
+async fn upload_resume_from_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    display_name: Option<String>,
+) -> Result<Option<ResumeProfileSummary>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Select your resume")
+        .add_filter("Resumes", &["pdf", "docx", "txt"])
+        .blocking_pick_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let file_path = picked
+        .into_path()
+        .map_err(|_| "failed to resolve the selected resume path".to_string())?;
+    save_imported_resume_from_path(&app, &state, file_path.to_string_lossy().to_string(), display_name)
+        .await
+        .map(Some)
+}
+
+#[tauri::command]
+async fn list_resumes(state: State<'_, AppState>) -> Result<Vec<ResumeProfileSummary>, String> {
+    state.db
+        .list_resume_profile_summaries()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1166,9 +1278,11 @@ async fn set_active_resume(state: State<'_, AppState>, resume_id: i64) -> Result
 #[tauri::command]
 async fn index_jobs_embeddings(state: State<'_, AppState>) -> Result<EmbeddingIndexStatus, String> {
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
+    // Persist all vectors under the single supported native embedding namespace.
+    let embedding_model = cfg.effective_embedding_model();
     let jobs = state.db.list_jobs_for_embedding().map_err(|e| e.to_string())?;
     if jobs.is_empty() {
-        return state.db.embedding_index_status(&cfg.embedding_model).map_err(|e| e.to_string());
+        return state.db.embedding_index_status(embedding_model).map_err(|e| e.to_string());
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -1190,16 +1304,17 @@ async fn index_jobs_embeddings(state: State<'_, AppState>) -> Result<EmbeddingIn
         let vector_json = serde_json::to_string(&vector).map_err(|e| e.to_string())?;
         state
             .db
-            .upsert_job_embedding(job.id, &cfg.embedding_model, &vector_json, &now)
+            .upsert_job_embedding(job.id, embedding_model, &vector_json, &now)
             .map_err(|e| e.to_string())?;
     }
 
-    state.db.embedding_index_status(&cfg.embedding_model).map_err(|e| e.to_string())
+    state.db.embedding_index_status(embedding_model).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn index_resume_embedding(state: State<'_, AppState>, resume_id: i64) -> Result<EmbeddingIndexStatus, String> {
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
+    let embedding_model = cfg.effective_embedding_model();
     let resume = state
         .db
         .get_resume_profile(resume_id)
@@ -1216,17 +1331,18 @@ async fn index_resume_embedding(state: State<'_, AppState>, resume_id: i64) -> R
     let vector_json = serde_json::to_string(&vector).map_err(|e| e.to_string())?;
     state
         .db
-        .upsert_resume_embedding(resume_id, &cfg.embedding_model, &vector_json, &now)
+        .upsert_resume_embedding(resume_id, embedding_model, &vector_json, &now)
         .map_err(|e| e.to_string())?;
-    state.db.embedding_index_status(&cfg.embedding_model).map_err(|e| e.to_string())
+    state.db.embedding_index_status(embedding_model).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn embedding_index_status(state: State<'_, AppState>) -> Result<EmbeddingIndexStatus, String> {
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
+    let embedding_model = cfg.effective_embedding_model();
     state
         .db
-        .embedding_index_status(&cfg.embedding_model)
+        .embedding_index_status(embedding_model)
         .map_err(|e| e.to_string())
 }
 
@@ -2053,16 +2169,18 @@ async fn ai_match_jobs(
     filters: Option<AiChatFilters>,
 ) -> Result<Vec<MatchJobResult>, String> {
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
+    // Matching must read from the same namespace used during indexing.
+    let embedding_model = cfg.effective_embedding_model();
     let resume_vector_json = state
         .db
-        .get_resume_embedding(resume_id, &cfg.embedding_model)
+        .get_resume_embedding(resume_id, embedding_model)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Resume embedding not found. Index resume first.".to_string())?;
     let resume_vector: Vec<f32> = serde_json::from_str(&resume_vector_json).map_err(|e| e.to_string())?;
 
     let mut rows = state
         .db
-        .list_job_embeddings(&cfg.embedding_model)
+        .list_job_embeddings(embedding_model)
         .map_err(|e| e.to_string())?;
 
     if let Some(f) = filters {
@@ -2172,16 +2290,14 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("./embeddings_cache"));
             let sentence_service = SentenceServiceClient::new(30_000, embeddings_cache_dir)
                 .map_err(|e| std::io::Error::other(format!("failed to init sentence service client: {e}")))?;
-            // Spawn the bundled Python AI + scrapling service. Runs in a
-            // background thread so app boot isn't blocked. Killed on drop.
+            // Spawn the bundled Python AI + scrapling service without waiting
+            // for readiness; diagnostics track background startup progress.
             let log_dir = app
                 .path()
                 .app_log_dir()
                 .or_else(|_| app.path().app_data_dir().map(|p| p.join("logs")))
                 .unwrap_or_else(|_| std::path::PathBuf::from("./logs"));
-            let ai_service = std::thread::spawn(move || ai_service_manager::start(log_dir))
-                .join()
-                .unwrap_or_else(|_| ai_service_manager::ServiceHandle { child: None });
+            let ai_service = ai_service_manager::start(log_dir);
             let webview_scraper = crawler::webview_scraper::WebviewScraperState::new();
             // Register the delivery state separately so the #[tauri::command]
             // scraper_webview_deliver can grab it via `tauri::State`.
@@ -2203,6 +2319,7 @@ pub fn run() {
             delete_run,
             clear_all_jobs,
             get_jobs,
+            get_watchlisted_jobs,
             fetch_job_details,
             toggle_watchlist,
             toggle_applied,

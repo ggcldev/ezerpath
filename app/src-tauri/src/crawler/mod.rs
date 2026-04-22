@@ -19,6 +19,12 @@ const MAX_PAGES: usize = 5;
 const FETCH_MAX_ATTEMPTS: usize = 3;
 const FETCH_RETRY_BASE_DELAY: Duration = Duration::from_millis(700);
 const SCRAPLING_BASE_URL_ENV: &str = "EZER_SCRAPLING_BASE_URL";
+const ALLOWED_JOB_HOSTS: &[&str] = &[
+    "onlinejobs.ph",
+    "www.onlinejobs.ph",
+    "bruntworkcareers.co",
+    "www.bruntworkcareers.co",
+];
 
 pub mod webview_scraper;
 
@@ -340,11 +346,9 @@ impl Crawler {
     }
 
     pub async fn fetch_job_details(&self, url: &str) -> Result<JobDetailsPayload, String> {
-        if !is_allowed_job_url(url) {
-            return Err("Unsupported job URL".to_string());
-        }
+        let parsed_url = parse_allowed_job_url(url)?;
         let html = self.fetch_with_retry(url).await?;
-        if url.contains("bruntworkcareers.co") {
+        if is_bruntwork_job_url(&parsed_url) {
             // Bruntwork uses Next.js App Router (RSC streaming); a plain HTTP fetch
             // does not contain rendered content. Try scrapling (headless browser) first.
             if let Some(scrapled) = self.try_scrapling_details_fallback(url, None).await {
@@ -1028,17 +1032,25 @@ pub(crate) fn is_meaningful_job_details(payload: &JobDetailsPayload) -> bool {
         || !payload.company.trim().is_empty()
 }
 
-fn is_allowed_job_url(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
+pub(crate) fn parse_allowed_job_url(url: &str) -> Result<Url, String> {
+    let parsed = Url::parse(url).map_err(|_| "Unsupported job URL".to_string())?;
     if parsed.scheme() != "https" {
-        return false;
+        return Err("Unsupported job URL".to_string());
     }
+    if !matches!(parsed.host_str(), Some(host) if ALLOWED_JOB_HOSTS.contains(&host)) {
+        return Err("Unsupported job URL".to_string());
+    }
+    Ok(parsed)
+}
+
+pub(crate) fn is_allowed_job_url(url: &str) -> bool {
+    parse_allowed_job_url(url).is_ok()
+}
+
+pub(crate) fn is_bruntwork_job_url(parsed: &Url) -> bool {
     matches!(
         parsed.host_str(),
-        Some("onlinejobs.ph") | Some("www.onlinejobs.ph")
-            | Some("bruntworkcareers.co") | Some("www.bruntworkcareers.co")
+        Some("bruntworkcareers.co") | Some("www.bruntworkcareers.co")
     )
 }
 
@@ -1651,6 +1663,25 @@ mod tests {
         assert!(!is_allowed_job_url("http://www.onlinejobs.ph/jobseekers/job/123"));
         assert!(!is_allowed_job_url("https://evil.example.com/jobseekers/job/123"));
         assert!(!is_allowed_job_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn parse_allowed_job_url_rejects_querystring_host_spoofing() {
+        assert!(parse_allowed_job_url(
+            "https://evil.example.com/path/bruntworkcareers.co/jobs/1?next=https://www.bruntworkcareers.co/jobs/2"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn bruntwork_detection_uses_parsed_host() {
+        let parsed = parse_allowed_job_url("https://www.bruntworkcareers.co/jobs/51936545689")
+            .expect("expected allowlisted bruntwork url");
+        assert!(is_bruntwork_job_url(&parsed));
+
+        let parsed = parse_allowed_job_url("https://www.onlinejobs.ph/jobseekers/job/123")
+            .expect("expected allowlisted onlinejobs url");
+        assert!(!is_bruntwork_job_url(&parsed));
     }
 
     #[test]

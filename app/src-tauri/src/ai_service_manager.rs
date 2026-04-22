@@ -12,7 +12,7 @@
 //! the `backend_diagnostics` IPC command when the service fails silently.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -22,6 +22,7 @@ use serde::Serialize;
 
 const SERVICE_URL: &str = "http://127.0.0.1:8765/health";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const LOG_FILE_NAME: &str = "ai_service.log";
 
 /// Handle to the spawned service. Kills the child on drop.
@@ -41,8 +42,21 @@ impl Drop for ServiceHandle {
 /// Snapshot of the AI service's startup and runtime state. Exposed to the
 /// frontend via the `backend_diagnostics` IPC command so users can see why
 /// the service failed instead of the silent `eprintln!` sink we used before.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendStartupState {
+    #[default]
+    NotStarted,
+    NotPackaged,
+    Spawning,
+    Ready,
+    StartupFailed,
+    TimedOut,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct BackendDiagnostics {
+    pub state: BackendStartupState,
     pub service_url: String,
     pub reachable: bool,
     pub ready: bool,
@@ -62,6 +76,7 @@ static LOG_FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
 fn diag_cell() -> &'static Mutex<BackendDiagnostics> {
     DIAG.get_or_init(|| {
         Mutex::new(BackendDiagnostics {
+            state: BackendStartupState::NotStarted,
             service_url: SERVICE_URL.into(),
             ..Default::default()
         })
@@ -88,6 +103,13 @@ pub fn snapshot() -> BackendDiagnostics {
     update_diag(|d| {
         d.reachable = reachable;
         d.last_probe_at_ms = now_ms();
+        if reachable {
+            d.ready = true;
+            if d.ready_at_ms.is_none() {
+                d.ready_at_ms = now_ms();
+            }
+            d.state = BackendStartupState::Ready;
+        }
     });
     diag_cell()
         .lock()
@@ -123,9 +145,12 @@ fn log_line(level: &str, msg: &str) {
     }
 }
 
-fn record_error(msg: &str) {
+fn record_error(state: BackendStartupState, msg: &str) {
     log_line("ERROR", msg);
-    update_diag(|d| d.startup_error = Some(msg.to_string()));
+    update_diag(|d| {
+        d.state = state;
+        d.startup_error = Some(msg.to_string());
+    });
 }
 
 fn is_service_up() -> bool {
@@ -151,17 +176,58 @@ fn find_uvicorn(start: &Path) -> Option<PathBuf> {
     None
 }
 
+fn spawn_log_pump<R: Read + Send + 'static>(level: &'static str, reader: R) {
+    std::thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.trim().is_empty() => log_line(level, &line),
+                Ok(_) => {}
+                Err(err) => {
+                    log_line(level, &format!("log pipe read failed: {err}"));
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn wait_for_service_ready(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut checker: impl FnMut() -> bool,
+) -> BackendStartupState {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if checker() {
+            return BackendStartupState::Ready;
+        }
+        std::thread::sleep(poll_interval);
+    }
+    BackendStartupState::TimedOut
+}
+
 /// Start the service if not already running. Returns a handle that will
 /// terminate the child on drop. If we cannot find the service binary,
 /// returns an empty handle (app continues; crawler will fall back to
 /// static HTML parsing).
 pub fn start(log_dir: PathBuf) -> ServiceHandle {
     init_log(&log_dir);
-    update_diag(|d| d.started_at_ms = now_ms());
+    update_diag(|d| {
+        d.state = BackendStartupState::Spawning;
+        d.reachable = false;
+        d.ready = false;
+        d.started_at_ms = now_ms();
+        d.ready_at_ms = None;
+        d.last_probe_at_ms = None;
+        d.startup_error = None;
+        d.child_pid = None;
+    });
 
     if is_service_up() {
         log_line("INFO", &format!("already running at {SERVICE_URL}"));
         update_diag(|d| {
+            d.state = BackendStartupState::Ready;
             d.ready = true;
             d.reachable = true;
             d.ready_at_ms = now_ms();
@@ -175,7 +241,7 @@ pub fn start(log_dir: PathBuf) -> ServiceHandle {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let Some(uvicorn) = find_uvicorn(&search_start) else {
-        record_error(&format!(
+        record_error(BackendStartupState::NotPackaged, &format!(
             "uvicorn not found relative to {}. Scrapling fallback disabled.",
             search_start.display()
         ));
@@ -191,7 +257,7 @@ pub fn start(log_dir: PathBuf) -> ServiceHandle {
         .map(|p| p.to_path_buf());
 
     let Some(cwd) = ai_service_dir else {
-        record_error(&format!(
+        record_error(BackendStartupState::StartupFailed, &format!(
             "could not derive cwd from {}",
             uvicorn.display()
         ));
@@ -211,45 +277,82 @@ pub fn start(log_dir: PathBuf) -> ServiceHandle {
     let child = Command::new(&uvicorn)
         .args(["server:app", "--host", "127.0.0.1", "--port", "8765"])
         .current_dir(&cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn();
 
-    let child = match child {
+    let mut child = match child {
         Ok(c) => {
             update_diag(|d| d.child_pid = Some(c.id()));
-            Some(c)
+            c
         }
         Err(e) => {
-            record_error(&format!("spawn failed: {e}"));
+            record_error(BackendStartupState::StartupFailed, &format!("spawn failed: {e}"));
             return ServiceHandle { child: None };
         }
     };
 
-    // Wait up to STARTUP_TIMEOUT for the service to become reachable, so the
-    // first crawl doesn't race the uvicorn boot.
-    let deadline = std::time::Instant::now() + STARTUP_TIMEOUT;
-    let mut became_ready = false;
-    while std::time::Instant::now() < deadline {
-        if is_service_up() {
+    if let Some(stdout) = child.stdout.take() {
+        spawn_log_pump("STDOUT", stdout);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_log_pump("STDERR", stderr);
+    }
+
+    std::thread::spawn(|| match wait_for_service_ready(STARTUP_TIMEOUT, STARTUP_POLL_INTERVAL, is_service_up) {
+        BackendStartupState::Ready => {
             log_line("INFO", &format!("ready at {SERVICE_URL}"));
             update_diag(|d| {
+                d.state = BackendStartupState::Ready;
                 d.ready = true;
                 d.reachable = true;
                 d.ready_at_ms = now_ms();
+                d.last_probe_at_ms = now_ms();
             });
-            became_ready = true;
-            break;
         }
-        std::thread::sleep(Duration::from_millis(500));
+        BackendStartupState::TimedOut => {
+            record_error(
+                BackendStartupState::TimedOut,
+                &format!(
+                    "service did not respond at {SERVICE_URL} within {}s",
+                    STARTUP_TIMEOUT.as_secs()
+                ),
+            );
+            update_diag(|d| d.last_probe_at_ms = now_ms());
+        }
+        _ => {}
+    });
+
+    ServiceHandle { child: Some(child) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{wait_for_service_ready, BackendStartupState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    fn wait_for_service_ready_returns_ready_before_timeout() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let state = wait_for_service_ready(
+            Duration::from_millis(50),
+            Duration::from_millis(1),
+            move || seen.fetch_add(1, Ordering::SeqCst) >= 2,
+        );
+        assert_eq!(state, BackendStartupState::Ready);
+        assert!(attempts.load(Ordering::SeqCst) >= 3);
     }
 
-    if !became_ready {
-        record_error(&format!(
-            "service did not respond at {SERVICE_URL} within {}s",
-            STARTUP_TIMEOUT.as_secs()
-        ));
+    #[test]
+    fn wait_for_service_ready_times_out_when_probe_never_succeeds() {
+        let state = wait_for_service_ready(
+            Duration::from_millis(10),
+            Duration::from_millis(1),
+            || false,
+        );
+        assert_eq!(state, BackendStartupState::TimedOut);
     }
-
-    ServiceHandle { child }
 }

@@ -1,9 +1,19 @@
-use crate::ai::{AiConversation, AiMessage, AiRuntimeConfig, EmbeddingIndexStatus, ResumeProfile};
+use crate::ai::{
+    AiConversation, AiMessage, AiRuntimeConfig, EmbeddingIndexStatus, ResumeProfile,
+    ResumeProfileSummary,
+};
 use rusqlite::{Connection, params, params_from_iter};
 use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+
+fn invalid_config_error(message: String) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message,
+    )))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -203,6 +213,7 @@ impl Database {
         std::fs::create_dir_all(&app_dir).ok();
         let db_path = app_dir.join("ezerpath.db");
         let conn = Connection::open(db_path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS jobs (
@@ -601,6 +612,10 @@ impl Database {
         Ok(jobs)
     }
 
+    pub fn get_watchlisted_jobs(&self) -> Result<Vec<Job>, rusqlite::Error> {
+        self.get_jobs(None, true, None)
+    }
+
     /// Full-text search over jobs (title, company, summary) ranked by bm25.
     /// Tokens are extracted from the user query, sanitized, and joined with
     /// implicit AND. Each token gets a `*` prefix so partial matches work.
@@ -778,23 +793,21 @@ impl Database {
         })
     }
 
-    pub fn list_resume_profiles(&self) -> Result<Vec<ResumeProfile>, rusqlite::Error> {
+    pub fn list_resume_profile_summaries(&self) -> Result<Vec<ResumeProfileSummary>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, source_file, raw_text, normalized_text, created_at, updated_at, is_active
+            "SELECT id, name, source_file, created_at, updated_at, is_active
              FROM resume_profiles
              ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok(ResumeProfile {
+            Ok(ResumeProfileSummary {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 source_file: row.get(2)?,
-                raw_text: row.get(3)?,
-                normalized_text: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                is_active: row.get::<_, i32>(7)? != 0,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                is_active: row.get::<_, i32>(5)? != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -1069,10 +1082,15 @@ impl Database {
             temperature: get("ai_temperature").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default.temperature),
             max_tokens: get("ai_max_tokens").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(default.max_tokens),
             timeout_ms: get("ai_timeout_ms").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(default.timeout_ms),
-        })
+        }
+        .with_supported_embedding_model())
     }
 
     pub fn set_ai_runtime_config(&self, cfg: &AiRuntimeConfig) -> Result<(), rusqlite::Error> {
+        let cfg = cfg
+            .clone()
+            .validated()
+            .map_err(invalid_config_error)?;
         let conn = self.conn()?;
         let upsert = |key: &str, value: String| -> Result<(), rusqlite::Error> {
             conn.execute(
@@ -1168,6 +1186,7 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
 mod tests {
     use super::{build_fts5_query, Database, Job};
     use chrono::{Duration, Utc};
+    use rusqlite::params;
     use tempfile::tempdir;
 
     fn mk_job(source_id: &str, scraped_at: String) -> Job {
@@ -1224,6 +1243,64 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].run_id, Some(run2));
         assert!(!jobs[0].is_new);
+    }
+
+    #[test]
+    fn foreign_keys_cascade_job_and_resume_embeddings() {
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db = Database::new(tmp.path().to_path_buf())
+            .expect("Database::new failed on fresh tempdir");
+        let now = Utc::now().to_rfc3339();
+
+        let run_id = db
+            .insert_run("seo specialist", &now)
+            .expect("insert_run");
+        let inserted = db
+            .insert_job(&mk_job("cascade-1", now.clone()), run_id)
+            .expect("insert job");
+        assert!(inserted);
+        let jobs = db.get_jobs(None, false, None).expect("get jobs");
+        let job_id = jobs[0].id.expect("job id");
+        db.upsert_job_embedding(job_id, "all-MiniLM-L6-v2", "[0.1,0.2]", &now)
+            .expect("upsert job embedding");
+
+        let resume = db
+            .save_resume_profile(
+                "Cascade Resume",
+                Some("/tmp/cascade-resume.txt"),
+                "raw text",
+                "normalized text",
+                &now,
+            )
+            .expect("save resume");
+        db.upsert_resume_embedding(resume.id, "all-MiniLM-L6-v2", "[0.3,0.4]", &now)
+            .expect("upsert resume embedding");
+
+        db.clear_all_jobs().expect("clear all jobs");
+        let status = db
+            .embedding_index_status("all-MiniLM-L6-v2")
+            .expect("embedding index status after clear_all_jobs");
+        assert_eq!(status.jobs_total, 0);
+        assert_eq!(status.jobs_indexed, 0);
+
+        {
+            let conn = db.conn().expect("db connection");
+            conn.execute(
+                "DELETE FROM resume_profiles WHERE id = ?1",
+                params![resume.id],
+            )
+            .expect("delete resume profile");
+        }
+        let status = db
+            .embedding_index_status("all-MiniLM-L6-v2")
+            .expect("embedding index status after resume delete");
+        assert_eq!(status.resumes_total, 0);
+        assert_eq!(status.resumes_indexed, 0);
+        assert_eq!(
+            db.get_resume_embedding(resume.id, "all-MiniLM-L6-v2")
+                .expect("get resume embedding after delete"),
+            None
+        );
     }
 
     #[test]
@@ -1364,5 +1441,83 @@ mod tests {
             .expect("ranked jobs");
         let titles: Vec<String> = ranked.iter().map(|j| j.title.clone()).collect();
         assert_eq!(titles, vec!["Hourly USD", "Monthly USD", "Monthly PHP"]);
+    }
+
+    #[test]
+    fn get_ai_runtime_config_sanitizes_unsupported_embedding_model() {
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db = Database::new(tmp.path().to_path_buf())
+            .expect("Database::new failed on fresh tempdir");
+
+        {
+            let conn = db.conn().expect("db connection");
+            conn.execute(
+                "UPDATE app_settings SET value = ?1 WHERE key = 'ai_embedding_model'",
+                params!["bge-small-en"],
+            )
+            .expect("update invalid embedding model");
+        }
+
+        let cfg = db
+            .get_ai_runtime_config()
+            .expect("get_ai_runtime_config should sanitize invalid value");
+        assert_eq!(cfg.embedding_model, crate::ai::SUPPORTED_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn set_ai_runtime_config_rejects_unsupported_embedding_model() {
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db = Database::new(tmp.path().to_path_buf())
+            .expect("Database::new failed on fresh tempdir");
+
+        let mut cfg = db
+            .get_ai_runtime_config()
+            .expect("get_ai_runtime_config");
+        cfg.embedding_model = "bge-small-en".to_string();
+
+        let err = db
+            .set_ai_runtime_config(&cfg)
+            .expect_err("unsupported embedding model should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("Unsupported embedding model"));
+
+        let stored = db
+            .get_ai_runtime_config()
+            .expect("get_ai_runtime_config after rejected save");
+        assert_eq!(stored.embedding_model, crate::ai::SUPPORTED_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn list_resume_profile_summaries_omit_body_text() {
+        let tmp = tempdir().expect("tempdir");
+        let db = Database::new(tmp.path().to_path_buf()).expect("db");
+        let now = Utc::now().to_rfc3339();
+
+        let saved = db
+            .save_resume_profile(
+                "Resume One",
+                Some("/tmp/resume-one.txt"),
+                "raw body text",
+                "normalized body text",
+                &now,
+            )
+            .expect("save resume");
+        let summaries = db
+            .list_resume_profile_summaries()
+            .expect("list summaries");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, saved.id);
+        assert_eq!(summaries[0].name, "Resume One");
+
+        let summary_json = serde_json::to_value(&summaries[0]).expect("serialize summary");
+        assert!(summary_json.get("raw_text").is_none());
+        assert!(summary_json.get("normalized_text").is_none());
+
+        let full = db
+            .get_resume_profile(saved.id)
+            .expect("get full resume")
+            .expect("resume should exist");
+        assert_eq!(full.raw_text, "raw body text");
+        assert_eq!(full.normalized_text, "normalized body text");
     }
 }

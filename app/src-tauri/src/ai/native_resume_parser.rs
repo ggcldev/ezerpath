@@ -38,7 +38,7 @@ fn extract_text_sync(path: &Path) -> Result<String, String> {
     match ext.as_str() {
         "pdf" => extract_pdf(path),
         "docx" => extract_docx(path),
-        "txt" | "md" | "" => extract_plain_text(path),
+        "txt" => extract_plain_text(path),
         other => Err(format!(
             "unsupported file type '{other}'. Supported: .pdf, .docx, .txt"
         )),
@@ -150,6 +150,7 @@ fn normalize_whitespace(raw: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn normalize_collapses_runs() {
@@ -171,5 +172,15 @@ mod tests {
     fn unsupported_extension_errors() {
         let err = extract_text_sync(Path::new("/tmp/fake.xyz")).unwrap_err();
         assert!(err.contains("unsupported") || err.contains("does not exist"));
+    }
+
+    #[test]
+    fn extensionless_files_are_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("resume");
+        std::fs::write(&path, "plain text").expect("write extensionless resume");
+
+        let err = extract_text_sync(&path).expect_err("extensionless files must be rejected");
+        assert!(err.contains("unsupported file type"));
     }
 }
