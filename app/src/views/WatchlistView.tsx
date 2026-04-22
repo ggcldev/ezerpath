@@ -1,10 +1,10 @@
 import { createSignal, For, Show, Resource, onCleanup, onMount } from "solid-js";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Check } from "lucide-solid";
 import JobDetailsDrawer from "../components/JobDetailsDrawer";
 import { rowHoverEnter, rowHoverLeave } from "../utils/fluidHover";
 import { animateViewEnter } from "../utils/viewMotion";
+import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
 
 interface Job {
   id: number;
@@ -97,15 +97,7 @@ export default function WatchlistView(props: WatchlistViewProps) {
   const hasRows = () => (props.jobs() || []).length > 0;
 
   const openUrl = (rawUrl: string) => {
-    try {
-      const parsed = new URL(rawUrl);
-      if (parsed.protocol !== "https:") return;
-      const allowedHosts = ["onlinejobs.ph", "www.onlinejobs.ph", "bruntworkcareers.co", "www.bruntworkcareers.co"];
-      if (!allowedHosts.includes(parsed.hostname)) return;
-      invoke("plugin:opener|open_url", { url: parsed.toString() });
-    } catch {
-      // Ignore invalid URLs.
-    }
+    void openAllowlistedHttpsUrl(rawUrl);
   };
   const handleWindowDrag = (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;

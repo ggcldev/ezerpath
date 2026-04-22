@@ -4,6 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bot, MessageSquarePlus, SendHorizontal, Sparkles, Trash2 } from "lucide-solid";
 import { animate } from "motion";
 import { animateViewEnter } from "../utils/viewMotion";
+import { shouldApplyConversationResponse } from "../utils/conversationLoad";
+import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
 import toast from "solid-toast";
 import ConfirmModal from "../components/ConfirmModal";
 
@@ -137,6 +139,7 @@ export default function EzerView() {
   let viewEl!: HTMLDivElement;
   let messagesEl!: HTMLDivElement;
   let textareaEl!: HTMLTextAreaElement;
+  let latestConversationLoadToken = 0;
 
   const animateMessageEnter = (el: HTMLElement, role: AiMessage["role"]) => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -162,12 +165,13 @@ export default function EzerView() {
   };
 
   const openUrl = (rawUrl: string) => {
-    try {
-      const parsed = new URL(rawUrl.trim());
-      void invoke("plugin:opener|open_url", { url: parsed.toString() });
-    } catch {
-      toast.error("Invalid job URL.");
-    }
+    void openAllowlistedHttpsUrl(rawUrl)
+      .then((opened) => {
+        if (!opened) {
+          toast.error("Invalid job URL.");
+        }
+      })
+      .catch(() => toast.error("Could not open job URL."));
   };
 
   const handleWindowDrag = (e: MouseEvent) => {
@@ -182,12 +186,22 @@ export default function EzerView() {
   };
 
   const loadMessages = async (conversationId: number) => {
+    const requestToken = ++latestConversationLoadToken;
     const list = await invoke<AiMessage[]>("ai_get_conversation", { conversationId });
+    if (!shouldApplyConversationResponse(
+      conversationId,
+      selectedConversationId(),
+      requestToken,
+      latestConversationLoadToken,
+    )) {
+      return [];
+    }
     setMessages(list);
     return list;
   };
 
   const startNewChat = () => {
+    latestConversationLoadToken += 1;
     setSelectedConversationId(null);
     setMessages([]);
     setDraft("");
@@ -201,6 +215,7 @@ export default function EzerView() {
     try {
       await invoke("ai_delete_conversation", { conversationId });
       if (selectedConversationId() === conversationId) {
+        latestConversationLoadToken += 1;
         setSelectedConversationId(null);
         setMessages([]);
         setTypingMessageId(null);
@@ -217,6 +232,7 @@ export default function EzerView() {
   const clearAllConversations = async () => {
     try {
       await invoke("ai_clear_conversations");
+      latestConversationLoadToken += 1;
       setSelectedConversationId(null);
       setMessages([]);
       setTypingMessageId(null);

@@ -18,6 +18,18 @@ interface ResumeProfile {
   is_active: boolean;
 }
 
+interface BackendDiagnostics {
+  state: "not_started" | "not_packaged" | "spawning" | "ready" | "startup_failed" | "timed_out";
+  service_url: string;
+  reachable: boolean;
+  ready: boolean;
+  uvicorn_path: string | null;
+  cwd: string | null;
+  log_path: string | null;
+  startup_error: string | null;
+  child_pid: number | null;
+}
+
 interface SettingsPanelProps {
   open: boolean;
   dark: boolean;
@@ -28,9 +40,9 @@ interface SettingsPanelProps {
   ollamaStatus: string;
   embeddingStatus: string;
   indexStatus: string;
+  backendDiagnostics: BackendDiagnostics | null;
   resumes: ResumeProfile[];
   selectedResumeId: number | null;
-  resumeFilePath: string;
   resumeStatus: string;
   onAiConfigChange: (next: AiRuntimeConfig) => void;
   onSaveAiConfig: () => void;
@@ -38,12 +50,28 @@ interface SettingsPanelProps {
   onCheckOllama: () => void;
   onCheckEmbedding: () => void;
   onIndexJobs: () => void;
-  onResumeFilePathChange: (value: string) => void;
-  onBrowseResumeFile: () => void;
-  onUploadResumeFromPath: () => void;
+  onRefreshDiagnostics: () => void;
+  onImportResume: () => void;
   onSelectResume: (resumeId: number) => void;
   onIndexResume: () => void;
   onClose: () => void;
+}
+
+function formatBackendState(state: BackendDiagnostics["state"]) {
+  switch (state) {
+    case "not_started":
+      return "Not started";
+    case "not_packaged":
+      return "Not packaged";
+    case "spawning":
+      return "Spawning";
+    case "ready":
+      return "Ready";
+    case "startup_failed":
+      return "Startup failed";
+    case "timed_out":
+      return "Timed out";
+  }
 }
 
 const sections = [
@@ -189,8 +217,12 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                   <input
                     class="mt-1 w-full rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
                     value={props.aiConfig.embedding_model}
-                    onInput={(e) => props.onAiConfigChange({ ...props.aiConfig, embedding_model: e.currentTarget.value })}
+                    readOnly
+                    disabled
                   />
+                  <p class="mt-1 text-[11px] text-mk-tertiary">
+                    Native runtime currently supports only <code>all-MiniLM-L6-v2</code>.
+                  </p>
                 </label>
               </div>
 
@@ -266,6 +298,13 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                 >
                   Index Jobs
                 </button>
+                <button
+                  class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
+                  disabled={props.aiBusy}
+                  onClick={props.onRefreshDiagnostics}
+                >
+                  Refresh Diagnostics
+                </button>
               </div>
 
               <div class="mt-2 space-y-1">
@@ -280,35 +319,40 @@ export default function SettingsPanel(props: SettingsPanelProps) {
                 </Show>
               </div>
 
+              <Show when={props.backendDiagnostics}>
+                {(diag) => (
+                  <div class="mt-3 rounded-md border border-mk-separator bg-mk-fill/40 p-3 space-y-1.5">
+                    <p class="text-[12px] font-semibold text-mk-text">Backend Diagnostics</p>
+                    <p class="text-[12px] text-mk-secondary">
+                      State: {formatBackendState(diag().state)}
+                      <Show when={diag().child_pid !== null}> · PID {diag().child_pid}</Show>
+                    </p>
+                    <p class="text-[12px] text-mk-secondary">Service URL: {diag().service_url}</p>
+                    <Show when={diag().startup_error}>
+                      <p class="text-[12px] text-red-400">{diag().startup_error}</p>
+                    </Show>
+                    <Show when={diag().log_path}>
+                      <p class="text-[12px] text-mk-secondary">Log file: {diag().log_path}</p>
+                    </Show>
+                    <Show when={diag().uvicorn_path}>
+                      <p class="text-[12px] text-mk-secondary">Uvicorn: {diag().uvicorn_path}</p>
+                    </Show>
+                  </div>
+                )}
+              </Show>
+
               <div class="mt-4 border-t border-mk-separator pt-3">
                 <h4 class="text-[13px] font-semibold text-mk-text">Resume Embedding</h4>
-                <label class="block text-[12px] text-mk-secondary mt-2">
-                  Resume File (`.pdf`, `.docx`, `.txt`)
-                  <div class="mt-1 flex items-stretch gap-2">
-                    <input
-                      class="flex-1 min-w-0 rounded-md border border-mk-separator bg-mk-fill px-2.5 py-1.5 text-[12px] text-mk-text outline-none"
-                      value={props.resumeFilePath}
-                      onInput={(e) => props.onResumeFilePathChange(e.currentTarget.value)}
-                      placeholder="Click Browse… or paste a file path"
-                    />
-                    <button
-                      type="button"
-                      class="shrink-0 px-3 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
-                      disabled={props.aiBusy}
-                      onClick={props.onBrowseResumeFile}
-                      title="Open native file picker"
-                    >
-                      Browse…
-                    </button>
-                  </div>
-                </label>
+                <p class="mt-2 text-[12px] text-mk-secondary">
+                  Resume files are selected with the native picker and copied into Ezerpath&apos;s app data directory before parsing.
+                </p>
                 <div class="mt-2 flex flex-wrap items-center gap-2">
                   <button
                     class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"
-                    disabled={props.aiBusy || !props.resumeFilePath.trim()}
-                    onClick={props.onUploadResumeFromPath}
+                    disabled={props.aiBusy}
+                    onClick={props.onImportResume}
                   >
-                    Upload Resume
+                    Select and Upload Resume
                   </button>
                   <button
                     class="px-3 py-1.5 rounded-md text-[12px] font-medium text-mk-secondary border border-mk-separator hover:bg-mk-fill transition-colors"

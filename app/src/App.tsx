@@ -1,6 +1,5 @@
 import { createSignal, createResource, createEffect, onCleanup, Match, Switch, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ConfirmModal from "./components/ConfirmModal";
 import SettingsPanel from "./components/SettingsPanel";
@@ -9,6 +8,7 @@ import JobsView from "./views/JobsView";
 import WatchlistView from "./views/WatchlistView";
 import EzerView from "./views/EzerView";
 import { runMutation } from "./utils/mutations";
+import { loadWatchlistJobs } from "./utils/watchlist";
 import toast, { Toaster } from "solid-toast";
 import "./App.css";
 
@@ -65,12 +65,33 @@ interface EmbeddingIndexStatus {
   active_embedding_model: string;
 }
 
-interface ResumeProfile {
+type BackendStartupState =
+  | "not_started"
+  | "not_packaged"
+  | "spawning"
+  | "ready"
+  | "startup_failed"
+  | "timed_out";
+
+interface BackendDiagnostics {
+  state: BackendStartupState;
+  service_url: string;
+  reachable: boolean;
+  ready: boolean;
+  uvicorn_path: string | null;
+  cwd: string | null;
+  log_path: string | null;
+  startup_error: string | null;
+  child_pid: number | null;
+  started_at_ms: number | null;
+  ready_at_ms: number | null;
+  last_probe_at_ms: number | null;
+}
+
+interface ResumeProfileSummary {
   id: number;
   name: string;
   source_file: string;
-  raw_text: string;
-  normalized_text: string;
   created_at: string;
   updated_at: string;
   is_active: boolean;
@@ -94,10 +115,10 @@ function App() {
   const [embeddingStatus, setEmbeddingStatus] = createSignal("");
   const [indexStatus, setIndexStatus] = createSignal("");
   const [ollamaModels, setOllamaModels] = createSignal<string[]>([]);
-  const [resumes, setResumes] = createSignal<ResumeProfile[]>([]);
+  const [resumes, setResumes] = createSignal<ResumeProfileSummary[]>([]);
   const [selectedResumeId, setSelectedResumeId] = createSignal<number | null>(null);
-  const [resumeFilePath, setResumeFilePath] = createSignal("");
   const [resumeStatus, setResumeStatus] = createSignal("");
+  const [backendDiagnostics, setBackendDiagnostics] = createSignal<BackendDiagnostics | null>(null);
   const [aiConfig, setAiConfig] = createSignal<AiRuntimeConfig>({
     ollama_base_url: "http://127.0.0.1:11434",
     ollama_model: "qwen2.5:7b-instruct",
@@ -127,6 +148,11 @@ function App() {
   const [jobs] = createResource(
     () => [version(), dateRange()] as const,
     ([, days]) => invoke<Job[]>("get_jobs", { keyword: null, watchlistedOnly: false, daysAgo: days })
+  );
+
+  const [watchlistJobs] = createResource(
+    () => version(),
+    () => loadWatchlistJobs<Job>()
   );
 
   const [keywords, { refetch: refetchKeywords }] = createResource(
@@ -249,7 +275,7 @@ function App() {
 
   const loadResumes = async () => {
     try {
-      const items = await invoke<ResumeProfile[]>("list_resumes");
+      const items = await invoke<ResumeProfileSummary[]>("list_resumes");
       setResumes(items);
       const active = items.find((r) => r.is_active);
       if (active) setSelectedResumeId(active.id);
@@ -274,6 +300,16 @@ function App() {
     await loadAiConfig();
     await loadOllamaModels();
     await loadResumes();
+    await loadBackendDiagnostics();
+  };
+
+  const loadBackendDiagnostics = async () => {
+    try {
+      const diagnostics = await invoke<BackendDiagnostics>("backend_diagnostics");
+      setBackendDiagnostics(diagnostics);
+    } catch (e: any) {
+      setGlobalError(`Could not load backend diagnostics: ${String(e)}`);
+    }
   };
 
   const saveAiConfig = () =>
@@ -306,34 +342,14 @@ function App() {
       toast.success("Job embeddings indexed.");
     });
 
-  const handleBrowseResumeFile = async () => {
-    try {
-      const picked = await openDialog({
-        title: "Select your resume",
-        multiple: false,
-        directory: false,
-        filters: [
-          { name: "Resumes", extensions: ["pdf", "docx", "txt"] },
-        ],
-      });
-      if (typeof picked === "string" && picked.trim().length > 0) {
-        setResumeFilePath(picked);
-      }
-    } catch (e: any) {
-      setGlobalError(`Could not open file picker: ${String(e)}`);
-    }
-  };
-
-  const uploadResumeFromPath = () =>
+  const importResumeFromPicker = () =>
     withAiBusy(async () => {
-      if (!resumeFilePath().trim()) {
-        toast.error("Please select a resume file first.");
-        return;
-      }
-      const profile = await invoke<ResumeProfile>("upload_resume_from_file", {
-        filePath: resumeFilePath().trim(),
+      const profile = await invoke<ResumeProfileSummary | null>("upload_resume_from_file", {
         displayName: null,
       });
+      if (!profile) {
+        return;
+      }
       setResumeStatus(`Uploaded: ${profile.name}`);
       await loadResumes();
       setSelectedResumeId(profile.id);
@@ -415,7 +431,7 @@ function App() {
             />
           </Match>
           <Match when={view() === "watchlist"}>
-            <WatchlistView jobs={jobs} onToggleWatchlist={handleToggleWatchlist} onToggleApplied={handleToggleApplied} />
+            <WatchlistView jobs={watchlistJobs} onToggleWatchlist={handleToggleWatchlist} onToggleApplied={handleToggleApplied} />
           </Match>
           <Match when={view() === "ezer"}>
             <EzerView />
@@ -442,9 +458,9 @@ function App() {
         ollamaStatus={ollamaStatus()}
         embeddingStatus={embeddingStatus()}
         indexStatus={indexStatus()}
+        backendDiagnostics={backendDiagnostics()}
         resumes={resumes().map((r) => ({ id: r.id, name: r.name, source_file: r.source_file, is_active: r.is_active }))}
         selectedResumeId={selectedResumeId()}
-        resumeFilePath={resumeFilePath()}
         resumeStatus={resumeStatus()}
         onAiConfigChange={setAiConfig}
         onSaveAiConfig={saveAiConfig}
@@ -452,9 +468,8 @@ function App() {
         onCheckOllama={checkOllama}
         onCheckEmbedding={checkEmbedding}
         onIndexJobs={indexJobs}
-        onResumeFilePathChange={setResumeFilePath}
-        onBrowseResumeFile={handleBrowseResumeFile}
-        onUploadResumeFromPath={uploadResumeFromPath}
+        onRefreshDiagnostics={() => void loadBackendDiagnostics()}
+        onImportResume={importResumeFromPicker}
         onSelectResume={selectResume}
         onIndexResume={indexResume}
         onClose={() => setSettingsOpen(false)}
