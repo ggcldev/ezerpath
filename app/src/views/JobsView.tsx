@@ -1,9 +1,10 @@
-import { createSignal, createMemo, For, Show, Resource, Accessor, onCleanup, onMount } from "solid-js";
+import { createSignal, createMemo, createResource, For, Show, Resource, Accessor, onCleanup, onMount } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ScanRun } from "../components/Sidebar";
 import AnimatedNumber from "../components/AnimatedNumber";
 import JobDetailsDrawer from "../components/JobDetailsDrawer";
-import { filterJobsByScope, getLatestRunId, latestRunCount as calcLatestRunCount } from "../utils/jobs";
+import { getLatestRunId } from "../utils/jobs";
 import { rowHoverEnter, rowHoverLeave } from "../utils/fluidHover";
 import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
 import { animateViewEnter } from "../utils/viewMotion";
@@ -29,8 +30,9 @@ interface Job {
 }
 
 interface JobsViewProps {
-  jobs: Resource<Job[]>;
   runs: Resource<ScanRun[]>;
+  jobsRefreshKey: Accessor<number>;
+  dateRange: Accessor<number>;
   crawling: boolean;
   enabledSources: Accessor<string[]>;
   onToggleWatchlist: (jobId: number) => void;
@@ -38,6 +40,19 @@ interface JobsViewProps {
 
 type PayRangeKey = "all" | "lt5" | "5_8" | "8_11" | "11_15" | "15_plus" | "unspecified";
 type ScanScopeKey = "all" | "latest";
+
+interface JobFacetCount {
+  value: string;
+  count: number;
+}
+
+interface JobFilterOptions {
+  keywords: JobFacetCount[];
+  sources: JobFacetCount[];
+  schedules: JobFacetCount[];
+  pay_ranges: JobFacetCount[];
+  latest_run_count: number;
+}
 
 function formatDate(raw: string): string {
   if (!raw) return "-";
@@ -59,48 +74,6 @@ const PAY_RANGES: { key: Exclude<PayRangeKey, "all">; label: string }[] = [
   { key: "15_plus", label: "$15+/hr" },
   { key: "unspecified", label: "Undisclosed" },
 ];
-const PHP_PER_USD = 56;
-const HOURS_PER_MONTH = 160;
-
-function parsePayToUsdHourly(payRaw: string): number | null {
-  const raw = (payRaw || "").trim();
-  if (!raw) return null;
-
-  const lower = raw.toLowerCase();
-  if (/(tbd|tba|tbc|negotiable|neg\b|depends|open|to be discuss|willing to pay|ranges?)/.test(lower)) {
-    return null;
-  }
-
-  const nums = [...lower.matchAll(/(\d[\d,]*(?:\.\d+)?)/g)]
-    .map((m) => Number(m[1].replace(/,/g, "")))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (nums.length === 0) return null;
-
-  const isRange = nums.length >= 2 && /(-|–|to)/.test(lower);
-  let amount = isRange ? (nums[0] + nums[1]) / 2 : nums[0];
-
-  if (/(php|₱)/.test(lower)) amount /= PHP_PER_USD;
-
-  const isHourly = /(\/\s*h|\/\s*hr|\/\s*hour|per\s*hour|\bhourly\b)/.test(lower);
-  const isMonthly = /(\/\s*mo|\/\s*month|\bmonthly\b|\bmonth\b)/.test(lower);
-
-  if (isHourly) return amount;
-  if (isMonthly) return amount / HOURS_PER_MONTH;
-
-  // OnlineJobs commonly mixes monthly and hourly values without explicit units.
-  if (amount >= 80) return amount / HOURS_PER_MONTH;
-  return amount;
-}
-
-function getPayRangeKey(payRaw: string): Exclude<PayRangeKey, "all"> {
-  const hourly = parsePayToUsdHourly(payRaw);
-  if (hourly === null) return "unspecified";
-  if (hourly < 5) return "lt5";
-  if (hourly < 8) return "5_8";
-  if (hourly < 11) return "8_11";
-  if (hourly < 15) return "11_15";
-  return "15_plus";
-}
 
 export default function JobsView(props: JobsViewProps) {
   const [selectedKeyword, setSelectedKeyword] = createSignal<string | null>(null);
@@ -156,15 +129,6 @@ export default function JobsView(props: JobsViewProps) {
     document.addEventListener("mouseup", onUp);
   };
 
-  const scheduleList = createMemo(() => {
-    const list = props.jobs() || [];
-    const map = new Map<string, number>();
-    for (const job of list) {
-      if (job.job_type) map.set(job.job_type, (map.get(job.job_type) ?? 0) + 1);
-    }
-    return [...map.entries()].map(([schedule, count]) => ({ schedule, count })).sort((a, b) => b.count - a.count);
-  });
-
   const sourceLabel = (src: string) =>
     src === "onlinejobs" ? "OnlineJobs.ph"
     : src === "bruntwork" ? "BruntWork Careers"
@@ -172,37 +136,65 @@ export default function JobsView(props: JobsViewProps) {
   const sourceDotClass = (src: string) =>
     src === "bruntwork" ? "bg-mk-cyan" : "bg-mk-green";
 
-  const sourceList = createMemo(() => {
-    const list = props.jobs() || [];
-    const enabled = props.enabledSources();
-    const map = new Map<string, number>();
-    for (const job of list) {
-      if (enabled.includes(job.source)) map.set(job.source, (map.get(job.source) ?? 0) + 1);
-    }
-    return [...map.entries()].map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count);
-  });
+  const latestRunId = () => {
+    return getLatestRunId(props.runs() || []);
+  };
 
-  // Keyword list derived from ALL jobs (not filtered), so panel always shows everything
-  const keywordList = createMemo(() => {
-    const list = props.jobs() || [];
-    const map = new Map<string, number>();
-    for (const job of list) {
-      const kw = job.keyword || "Other";
-      map.set(kw, (map.get(kw) ?? 0) + 1);
-    }
-    return [...map.entries()]
-      .map(([keyword, count]) => ({ keyword, count }))
+  const [filterOptions] = createResource(
+    () => [props.jobsRefreshKey(), props.dateRange()] as const,
+    ([, days]) => invoke<JobFilterOptions>("get_job_filter_options", { daysAgo: days })
+  );
+
+  const [jobs] = createResource(
+    () => [
+      props.jobsRefreshKey(),
+      props.dateRange(),
+      selectedKeyword(),
+      selectedPayRange(),
+      selectedScanScope(),
+      selectedSource(),
+      selectedSchedule(),
+      latestRunId(),
+    ] as const,
+    ([, days, keyword, payRange, scanScope, source, schedule, runId]) =>
+      invoke<Job[]>("get_jobs", {
+        keyword,
+        watchlistedOnly: false,
+        daysAgo: days,
+        source,
+        jobType: schedule,
+        payRange: payRange === "all" ? null : payRange,
+        runId: scanScope === "latest" ? runId : null,
+      })
+  );
+
+  const scheduleList = createMemo(() => {
+    return (filterOptions()?.schedules || [])
+      .map((item) => ({ schedule: item.value, count: item.count }))
       .sort((a, b) => b.count - a.count);
   });
 
-  // Pay ranges derived from all jobs, normalized to USD hourly equivalents.
+  const sourceList = createMemo(() => {
+    const enabled = props.enabledSources();
+    return (filterOptions()?.sources || [])
+      .filter((item) => enabled.includes(item.value))
+      .map((item) => ({ source: item.value, count: item.count }))
+      .sort((a, b) => b.count - a.count);
+  });
+
+  const keywordList = createMemo(() => {
+    return (filterOptions()?.keywords || [])
+      .map((item) => ({ keyword: item.value, count: item.count }))
+      .sort((a, b) => b.count - a.count);
+  });
+
   const payRangeList = createMemo(() => {
-    const list = props.jobs() || [];
     const map = new Map<Exclude<PayRangeKey, "all">, number>();
     for (const key of PAY_RANGES) map.set(key.key, 0);
-    for (const job of list) {
-      const key = getPayRangeKey(job.pay);
-      map.set(key, (map.get(key) ?? 0) + 1);
+    for (const item of filterOptions()?.pay_ranges || []) {
+      if (map.has(item.value as Exclude<PayRangeKey, "all">)) {
+        map.set(item.value as Exclude<PayRangeKey, "all">, item.count);
+      }
     }
     return PAY_RANGES.map((r) => ({ ...r, count: map.get(r.key) ?? 0 }));
   });
@@ -214,41 +206,20 @@ export default function JobsView(props: JobsViewProps) {
       return (isNaN(db) ? 0 : db) - (isNaN(da) ? 0 : da);
     });
 
-  const latestRunId = () => {
-    return getLatestRunId(props.runs() || []);
-  };
-
   const latestRunCount = () => {
-    return calcLatestRunCount(props.jobs() || [], latestRunId());
+    return filterOptions()?.latest_run_count ?? 0;
   };
 
-  // When a keyword is selected: flat filtered list. When All: grouped.
   const visibleJobs = createMemo(() => {
-    const list = props.jobs() || [];
+    const list = jobs() || [];
     const kw = selectedKeyword();
-    const payRange = selectedPayRange();
-    const scanScope = selectedScanScope();
-    const runId = latestRunId();
-
-    const src = selectedSource();
-    const sched = selectedSchedule();
-    const baseByScope = filterJobsByScope(list, scanScope, runId);
-    const baseBySource = src ? baseByScope.filter((j) => j.source === src) : baseByScope;
-    const baseByKeyword = kw ? baseBySource.filter((j) => (j.keyword || "Other") === kw) : baseBySource;
-    const baseBySchedule = sched ? baseByKeyword.filter((j) => j.job_type === sched) : baseByKeyword;
-    const base = payRange === "all"
-      ? baseBySchedule
-      : baseBySchedule.filter((j) => getPayRangeKey(j.pay) === payRange);
-    const searched = base;
 
     if (kw) {
-      // Flat sorted list for single keyword
-      return [{ keyword: kw, jobs: sortJobs(searched) }];
+      return [{ keyword: kw, jobs: sortJobs(list) }];
     }
 
-    // Group by keyword, sorted by most recent job
     const map = new Map<string, Job[]>();
-    for (const job of searched) {
+    for (const job of list) {
       const k = job.keyword || "Other";
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(job);
@@ -263,7 +234,8 @@ export default function JobsView(props: JobsViewProps) {
   });
 
   const totalCount = createMemo(() => visibleJobs().reduce((s, g) => s + g.jobs.length, 0));
-  const hasRows = createMemo(() => (props.jobs() || []).length > 0);
+  const allJobsCount = createMemo(() => keywordList().reduce((sum, item) => sum + item.count, 0));
+  const hasRows = createMemo(() => (jobs() || []).length > 0);
 
   const openUrl = (rawUrl: string) => {
     void openAllowlistedHttpsUrl(rawUrl);
@@ -312,7 +284,7 @@ export default function JobsView(props: JobsViewProps) {
           >
             <span class="text-[12px] font-medium truncate">All</span>
             <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
-              {(props.jobs() || []).length}
+              {allJobsCount()}
             </span>
           </button>
 
@@ -348,7 +320,7 @@ export default function JobsView(props: JobsViewProps) {
             >
               <span class="text-[12px] font-medium truncate">All scans</span>
               <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
-                <AnimatedNumber value={(props.jobs() || []).length} class="inline-block" />
+                <AnimatedNumber value={allJobsCount()} class="inline-block" />
               </span>
             </button>
 
@@ -381,7 +353,7 @@ export default function JobsView(props: JobsViewProps) {
             >
               <span class="text-[12px] font-medium truncate">All rates</span>
               <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">
-                {(props.jobs() || []).length}
+                {allJobsCount()}
               </span>
             </button>
 
@@ -416,7 +388,7 @@ export default function JobsView(props: JobsViewProps) {
               onClick={() => setSelectedSchedule(null)}
             >
               <span class="text-[12px] font-medium truncate">All</span>
-              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{(props.jobs() || []).length}</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{allJobsCount()}</span>
             </button>
             <For each={scheduleList()}>
               {(item) => (
@@ -447,7 +419,7 @@ export default function JobsView(props: JobsViewProps) {
               onClick={() => setSelectedSource(null)}
             >
               <span class="text-[12px] font-medium">All</span>
-              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{(props.jobs() || []).length}</span>
+              <span class="text-[11px] text-mk-green font-semibold ml-1 shrink-0">{allJobsCount()}</span>
             </button>
             <For each={sourceList()}>
               {(item) => (
@@ -516,7 +488,7 @@ export default function JobsView(props: JobsViewProps) {
               </colgroup>
               <tbody>
                 <Show
-                  when={!props.jobs.loading || hasRows()}
+                  when={!jobs.loading || hasRows()}
                   fallback={<tr><td colspan="6" class="text-center py-16 text-[13px] text-mk-tertiary">Loading...</td></tr>}
                 >
                   <Show

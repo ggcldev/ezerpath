@@ -69,6 +69,7 @@ pub fn run() {
             delete_run,
             clear_all_jobs,
             get_jobs,
+            get_job_filter_options,
             get_watchlisted_jobs,
             fetch_job_details,
             toggle_watchlist,

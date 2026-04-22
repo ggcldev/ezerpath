@@ -469,7 +469,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P3.3 - Push more filtering and shaping into SQLite
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -480,22 +480,22 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 **Exact tasks**
 
-- [ ] Add dedicated backend query shapes for:
-  - watchlisted jobs
-  - latest-run jobs
-  - optional source/schedule/pay filters where practical
-- [ ] Move expensive, repeated client-side shaping out of the biggest tables first.
-- [ ] Keep UI-only presentation transforms in the frontend, but move data filtering and selection to the backend.
-- [ ] Add DB tests for the new query helpers.
+- [x] Add dedicated backend query shapes for:
+  - [x] watchlisted jobs
+  - [x] latest-run jobs
+  - [x] optional source/schedule/pay filters where practical
+- [x] Move expensive, repeated client-side shaping out of the biggest tables first.
+- [x] Keep UI-only presentation transforms in the frontend, but move data filtering and selection to the backend.
+- [x] Add DB tests for the new query helpers.
 
 **Acceptance criteria**
 
-- [ ] The frontend no longer has to fetch all jobs just to render basic filtered views.
-- [ ] Jobs and watchlist screens render from purpose-built result sets.
+- [x] The frontend no longer has to fetch all jobs just to render basic filtered views.
+- [x] Jobs and watchlist screens render from purpose-built result sets.
 
 **Suggested commit**
 
-- `refactor(data): move core job filtering paths into SQLite queries`
+- `refactor(data): move core job filtering paths into SQLite queries` (`DONE`)
 
 ### P3.4 - Centralize pay normalization
 

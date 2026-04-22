@@ -1,5 +1,5 @@
 use crate::crawler::{self, is_bruntwork_job_url, parse_allowed_job_url, JobDetailsPayload};
-use crate::db::Job;
+use crate::db::{Job, JobFilterOptions, JobQuery};
 use crate::AppState;
 use tauri::State;
 
@@ -9,10 +9,22 @@ pub(crate) async fn get_jobs(
     keyword: Option<String>,
     watchlisted_only: bool,
     days_ago: Option<i64>,
+    source: Option<String>,
+    job_type: Option<String>,
+    pay_range: Option<String>,
+    run_id: Option<i64>,
 ) -> Result<Vec<Job>, String> {
     let mut jobs = state
         .db
-        .get_jobs(keyword.as_deref(), watchlisted_only, days_ago)
+        .query_jobs(JobQuery {
+            keyword: keyword.as_deref(),
+            watchlisted_only,
+            days_ago,
+            source: source.as_deref(),
+            job_type: job_type.as_deref(),
+            pay_range: pay_range.as_deref(),
+            run_id,
+        })
         .map_err(|e| e.to_string())?;
 
     if let Some(days) = days_ago {
@@ -26,6 +38,17 @@ pub(crate) async fn get_jobs(
     }
 
     Ok(jobs)
+}
+
+#[tauri::command]
+pub(crate) async fn get_job_filter_options(
+    state: State<'_, AppState>,
+    days_ago: Option<i64>,
+) -> Result<JobFilterOptions, String> {
+    state
+        .db
+        .job_filter_options(days_ago)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

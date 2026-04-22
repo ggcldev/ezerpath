@@ -134,11 +134,6 @@ function App() {
     refreshWatchlist();
   };
 
-  const [jobs] = createResource(
-    () => [jobsRefreshKey(), dateRange()] as const,
-    ([, days]) => invoke<Job[]>("get_jobs", { keyword: null, watchlistedOnly: false, daysAgo: days })
-  );
-
   const [watchlistJobs] = createResource(
     () => watchlistRefreshKey(),
     () => loadWatchlistJobs<Job>()
@@ -414,8 +409,9 @@ function App() {
           </Match>
           <Match when={view() === "jobs"}>
             <JobsView
-              jobs={jobs}
               runs={runs}
+              jobsRefreshKey={jobsRefreshKey}
+              dateRange={dateRange}
               crawling={crawling()}
               enabledSources={enabledSources}
               onToggleWatchlist={handleToggleWatchlist}

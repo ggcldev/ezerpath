@@ -2,8 +2,8 @@ use crate::ai::{
     AiConversation, AiMessage, AiRuntimeConfig, EmbeddingIndexStatus, ResumeProfile,
     ResumeProfileSummary,
 };
-use rusqlite::{Connection, params, params_from_iter};
 use rusqlite::types::Value;
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -75,6 +75,32 @@ pub struct JobEmbeddingRow {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct JobQuery<'a> {
+    pub keyword: Option<&'a str>,
+    pub watchlisted_only: bool,
+    pub days_ago: Option<i64>,
+    pub source: Option<&'a str>,
+    pub job_type: Option<&'a str>,
+    pub pay_range: Option<&'a str>,
+    pub run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobFacetCount {
+    pub value: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobFilterOptions {
+    pub keywords: Vec<JobFacetCount>,
+    pub sources: Vec<JobFacetCount>,
+    pub schedules: Vec<JobFacetCount>,
+    pub pay_ranges: Vec<JobFacetCount>,
+    pub latest_run_count: i64,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ParsedPay {
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -133,21 +159,33 @@ pub fn parse_pay(raw: &str) -> ParsedPay {
 
     let (min, max) = if nums.len() >= 2 {
         let (a, b) = (nums[0], nums[1]);
-        if a <= b { (Some(a), Some(b)) } else { (Some(b), Some(a)) }
+        if a <= b {
+            (Some(a), Some(b))
+        } else {
+            (Some(b), Some(a))
+        }
     } else {
         (Some(nums[0]), Some(nums[0]))
     };
 
     // Infer currency from magnitude when not explicitly stated
     let currency = if currency.is_empty() {
-        if max.unwrap_or(0.0) > 500.0 { "PHP" } else { "USD" }
+        if max.unwrap_or(0.0) > 500.0 {
+            "PHP"
+        } else {
+            "USD"
+        }
     } else {
         currency
     };
 
     // Infer period from magnitude when not explicitly stated
     let period = if period.is_empty() {
-        if max.unwrap_or(0.0) <= 50.0 { "hourly" } else { "monthly" }
+        if max.unwrap_or(0.0) <= 50.0 {
+            "hourly"
+        } else {
+            "monthly"
+        }
     } else {
         period
     };
@@ -166,7 +204,9 @@ fn extract_numbers_from_pay(s: &str) -> Vec<f64> {
     let len = chars.len();
     let mut i = 0;
     while i < len {
-        if chars[i].is_ascii_digit() || (chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit()) {
+        if chars[i].is_ascii_digit()
+            || (chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit())
+        {
             let start = i;
             while i < len && (chars[i].is_ascii_digit() || chars[i] == '.') {
                 i += 1;
@@ -184,6 +224,104 @@ fn extract_numbers_from_pay(s: &str) -> Vec<f64> {
     nums
 }
 
+fn normalized_hourly_pay_sql() -> &'static str {
+    "CASE
+        WHEN salary_min IS NULL THEN NULL
+        ELSE
+            ((salary_min + COALESCE(salary_max, salary_min)) / 2.0)
+            * CASE LOWER(COALESCE(salary_period, ''))
+                WHEN 'monthly' THEN 1.0 / 160.0
+                ELSE 1.0
+              END
+            / CASE UPPER(COALESCE(salary_currency, ''))
+                WHEN 'PHP' THEN 56.0
+                ELSE 1.0
+              END
+      END"
+}
+
+fn push_pay_range_filter(query: &mut String, pay_range: &str) {
+    let expr = normalized_hourly_pay_sql();
+    match pay_range {
+        "lt5" => {
+            query.push_str(" AND ");
+            query.push_str(expr);
+            query.push_str(" < 5.0");
+        }
+        "5_8" => {
+            query.push_str(" AND ");
+            query.push_str(expr);
+            query.push_str(" >= 5.0 AND ");
+            query.push_str(expr);
+            query.push_str(" < 8.0");
+        }
+        "8_11" => {
+            query.push_str(" AND ");
+            query.push_str(expr);
+            query.push_str(" >= 8.0 AND ");
+            query.push_str(expr);
+            query.push_str(" < 11.0");
+        }
+        "11_15" => {
+            query.push_str(" AND ");
+            query.push_str(expr);
+            query.push_str(" >= 11.0 AND ");
+            query.push_str(expr);
+            query.push_str(" < 15.0");
+        }
+        "15_plus" => {
+            query.push_str(" AND ");
+            query.push_str(expr);
+            query.push_str(" >= 15.0");
+        }
+        "unspecified" => query.push_str(" AND salary_min IS NULL"),
+        _ => {}
+    }
+}
+
+fn push_job_filters(query: &mut String, bind_values: &mut Vec<Value>, filters: &JobQuery<'_>) {
+    if filters.watchlisted_only {
+        query.push_str(" AND watchlisted = 1");
+    }
+    if let Some(days) = filters.days_ago {
+        let bounded_days = days.clamp(0, 3650);
+        query.push_str(" AND julianday(scraped_at) >= julianday('now', ?)");
+        bind_values.push(Value::Text(format!("-{bounded_days} days")));
+    }
+    if let Some(kw) = filters.keyword.and_then(non_empty_filter) {
+        if kw == "Other" {
+            query.push_str(" AND (keyword = ? OR keyword = '')");
+        } else {
+            query.push_str(" AND keyword = ?");
+        }
+        bind_values.push(Value::Text(kw.to_string()));
+    }
+    if let Some(source) = filters.source.and_then(non_empty_filter) {
+        query.push_str(" AND source = ?");
+        bind_values.push(Value::Text(source.to_string()));
+    }
+    if let Some(job_type) = filters.job_type.and_then(non_empty_filter) {
+        query.push_str(" AND job_type = ?");
+        bind_values.push(Value::Text(job_type.to_string()));
+    }
+    if let Some(run_id) = filters.run_id {
+        query.push_str(" AND run_id = ?");
+        bind_values.push(Value::Integer(run_id));
+    }
+    if let Some(pay_range) = filters.pay_range.and_then(non_empty_filter) {
+        push_pay_range_filter(query, pay_range);
+    }
+}
+
+fn non_empty_filter(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() || value == "all" {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 /// Build a safe FTS5 MATCH expression from arbitrary user text. Strips
 /// non-alphanumeric characters from each whitespace-split token, drops empties,
 /// then joins with spaces (implicit AND) and appends `*` for prefix matching.
@@ -191,7 +329,11 @@ fn extract_numbers_from_pay(s: &str) -> Vec<f64> {
 pub fn build_fts5_query(input: &str) -> String {
     input
         .split_whitespace()
-        .map(|tok| tok.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .map(|tok| {
+            tok.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|tok| !tok.is_empty())
         .map(|tok| format!("{tok}*"))
         .collect::<Vec<_>>()
@@ -204,9 +346,11 @@ pub struct Database {
 
 impl Database {
     fn conn(&self) -> Result<MutexGuard<'_, Connection>, rusqlite::Error> {
-        self.conn
-            .lock()
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("database mutex poisoned: {e}")))))
+        self.conn.lock().map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!(
+                "database mutex poisoned: {e}"
+            ))))
+        })
     }
 
     pub fn new(app_dir: PathBuf) -> Result<Self, rusqlite::Error> {
@@ -315,35 +459,55 @@ impl Database {
             INSERT OR IGNORE INTO keywords (keyword) VALUES ('link building');
             INSERT OR IGNORE INTO keywords (keyword) VALUES ('outreach');
             INSERT OR IGNORE INTO keywords (keyword) VALUES ('content writer');
-            "
+            ",
         )?;
 
         // Migration: add run_id to jobs if not yet present (ignore error if already exists)
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN run_id INTEGER REFERENCES runs(id);").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN run_id INTEGER REFERENCES runs(id);")
+            .ok();
         // Migration: add company logo URL if not yet present.
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN company_logo_url TEXT DEFAULT '';").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN company_logo_url TEXT DEFAULT '';")
+            .ok();
         // Migration: add run lifecycle fields if not yet present.
-        conn.execute_batch("ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';").ok();
-        conn.execute_batch("ALTER TABLE runs ADD COLUMN error_message TEXT;").ok();
-        conn.execute_batch("ALTER TABLE runs ADD COLUMN finished_at TEXT;").ok();
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded';")
+            .ok();
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN error_message TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE runs ADD COLUMN finished_at TEXT;")
+            .ok();
         // Migration: add normalized salary fields.
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_min REAL;").ok();
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_max REAL;").ok();
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_currency TEXT DEFAULT '';").ok();
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_period TEXT DEFAULT '';").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_min REAL;")
+            .ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_max REAL;")
+            .ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_currency TEXT DEFAULT '';")
+            .ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN salary_period TEXT DEFAULT '';")
+            .ok();
         // Migration: add applied tracker.
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN applied INTEGER DEFAULT 0;").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN applied INTEGER DEFAULT 0;")
+            .ok();
         // Migration: add job type (full-time / part-time / hours).
-        conn.execute_batch("ALTER TABLE jobs ADD COLUMN job_type TEXT DEFAULT '';").ok();
+        conn.execute_batch("ALTER TABLE jobs ADD COLUMN job_type TEXT DEFAULT '';")
+            .ok();
         // Migration: add linked job IDs for chat follow-up context.
-        conn.execute_batch("ALTER TABLE ai_messages ADD COLUMN linked_job_ids_json TEXT DEFAULT '[]';").ok();
+        conn.execute_batch(
+            "ALTER TABLE ai_messages ADD COLUMN linked_job_ids_json TEXT DEFAULT '[]';",
+        )
+        .ok();
         // Migration: telemetry breakdown on ai_runs (phase #2).
-        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN intent TEXT;").ok();
-        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN route TEXT;").ok();
-        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN candidate_job_ids TEXT;").ok();
-        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN final_job_ids TEXT;").ok();
-        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN retrieval_ms INTEGER;").ok();
-        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN llm_ms INTEGER;").ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN intent TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN route TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN candidate_job_ids TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN final_job_ids TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN retrieval_ms INTEGER;")
+            .ok();
+        conn.execute_batch("ALTER TABLE ai_runs ADD COLUMN llm_ms INTEGER;")
+            .ok();
 
         // Migration: FTS5 index over jobs.title/company/summary (phase #3).
         // Uses contentless-mirror pattern: jobs_fts is a shadow table kept in
@@ -385,15 +549,15 @@ impl Database {
                 .execute_batch("INSERT INTO jobs_fts(jobs_fts) VALUES('integrity-check');")
                 .is_ok();
             if count == 0 || !fts_ok {
-                conn.execute_batch("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild');").ok();
+                conn.execute_batch("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild');")
+                    .ok();
             }
         }
 
         // Backfill salary fields for existing rows that have a pay string but no parsed salary.
         {
-            let mut stmt = conn.prepare(
-                "SELECT id, pay FROM jobs WHERE pay != '' AND salary_max IS NULL",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT id, pay FROM jobs WHERE pay != '' AND salary_max IS NULL")?;
             let rows: Vec<(i64, String)> = stmt
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .filter_map(|r| r.ok())
@@ -433,7 +597,9 @@ impl Database {
             params![defaults.timeout_ms.to_string()],
         )?;
 
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn insert_run(&self, keywords: &str, started_at: &str) -> Result<i64, rusqlite::Error> {
@@ -445,7 +611,13 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn complete_run(&self, run_id: i64, total_found: i64, total_new: i64, finished_at: &str) -> Result<(), rusqlite::Error> {
+    pub fn complete_run(
+        &self,
+        run_id: i64,
+        total_found: i64,
+        total_new: i64,
+        finished_at: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE runs
@@ -456,7 +628,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn fail_run(&self, run_id: i64, total_found: i64, total_new: i64, error_message: &str, finished_at: &str) -> Result<(), rusqlite::Error> {
+    pub fn fail_run(
+        &self,
+        run_id: i64,
+        total_found: i64,
+        total_new: i64,
+        error_message: &str,
+        finished_at: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE runs
@@ -482,7 +661,9 @@ impl Database {
             })
         })?;
         let mut runs = Vec::new();
-        for row in rows { runs.push(row?); }
+        for row in rows {
+            runs.push(row?);
+        }
         Ok(runs)
     }
 
@@ -578,7 +759,7 @@ impl Database {
         Ok(false)
     }
 
-    pub fn get_jobs(&self, keyword: Option<&str>, watchlisted_only: bool, days_ago: Option<i64>) -> Result<Vec<Job>, rusqlite::Error> {
+    pub fn query_jobs(&self, filters: JobQuery<'_>) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut query = String::from(
             "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period, applied, job_type
@@ -586,30 +767,162 @@ impl Database {
         );
         let mut bind_values: Vec<Value> = Vec::new();
 
-        if watchlisted_only {
-            query.push_str(" AND watchlisted = 1");
-        }
-        if let Some(days) = days_ago {
-            let bounded_days = days.clamp(0, 3650);
-            query.push_str(" AND julianday(scraped_at) >= julianday('now', ?)");
-            bind_values.push(Value::Text(format!("-{bounded_days} days")));
-        }
-        if let Some(kw) = keyword {
-            query.push_str(" AND keyword = ?");
-            bind_values.push(Value::Text(kw.to_string()));
-        }
+        push_job_filters(&mut query, &mut bind_values, &filters);
         query.push_str(" ORDER BY scraped_at DESC");
 
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
 
         let mut jobs = Vec::new();
-        for row in rows { jobs.push(row?); }
+        for row in rows {
+            jobs.push(row?);
+        }
         Ok(jobs)
     }
 
+    pub fn get_jobs(
+        &self,
+        keyword: Option<&str>,
+        watchlisted_only: bool,
+        days_ago: Option<i64>,
+    ) -> Result<Vec<Job>, rusqlite::Error> {
+        self.query_jobs(JobQuery {
+            keyword,
+            watchlisted_only,
+            days_ago,
+            ..Default::default()
+        })
+    }
+
     pub fn get_watchlisted_jobs(&self) -> Result<Vec<Job>, rusqlite::Error> {
-        self.get_jobs(None, true, None)
+        self.query_jobs(JobQuery {
+            watchlisted_only: true,
+            ..Default::default()
+        })
+    }
+
+    pub fn count_jobs(&self, filters: JobQuery<'_>) -> Result<i64, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut query = String::from("SELECT COUNT(*) FROM jobs WHERE 1=1");
+        let mut bind_values: Vec<Value> = Vec::new();
+        push_job_filters(&mut query, &mut bind_values, &filters);
+        conn.query_row(&query, params_from_iter(bind_values.iter()), |row| {
+            row.get(0)
+        })
+    }
+
+    pub fn job_filter_options(
+        &self,
+        days_ago: Option<i64>,
+    ) -> Result<JobFilterOptions, rusqlite::Error> {
+        let latest_run_id = self.latest_run_id()?;
+        let latest_run_count = match latest_run_id {
+            Some(run_id) => self.count_jobs(JobQuery {
+                days_ago,
+                run_id: Some(run_id),
+                ..Default::default()
+            })?,
+            None => 0,
+        };
+
+        Ok(JobFilterOptions {
+            keywords: self.job_facets(
+                "COALESCE(NULLIF(keyword, ''), 'Other')",
+                "keyword != '' OR keyword = ''",
+                days_ago,
+            )?,
+            sources: self.job_facets("source", "source != ''", days_ago)?,
+            schedules: self.job_facets("job_type", "job_type != ''", days_ago)?,
+            pay_ranges: self.pay_range_facets(days_ago)?,
+            latest_run_count,
+        })
+    }
+
+    fn latest_run_id(&self) -> Result<Option<i64>, rusqlite::Error> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id FROM runs ORDER BY started_at DESC, id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+
+    fn job_facets(
+        &self,
+        expression: &str,
+        extra_where: &str,
+        days_ago: Option<i64>,
+    ) -> Result<Vec<JobFacetCount>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let mut query = format!(
+            "SELECT {expression} AS value, COUNT(*) AS count FROM jobs WHERE 1=1 AND ({extra_where})"
+        );
+        let mut bind_values: Vec<Value> = Vec::new();
+        push_job_filters(
+            &mut query,
+            &mut bind_values,
+            &JobQuery {
+                days_ago,
+                ..Default::default()
+            },
+        );
+        query.push_str(" GROUP BY value ORDER BY count DESC, value ASC");
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), |row| {
+            Ok(JobFacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        let mut facets = Vec::new();
+        for row in rows {
+            facets.push(row?);
+        }
+        Ok(facets)
+    }
+
+    fn pay_range_facets(
+        &self,
+        days_ago: Option<i64>,
+    ) -> Result<Vec<JobFacetCount>, rusqlite::Error> {
+        let conn = self.conn()?;
+        let pay_expr = normalized_hourly_pay_sql();
+        let mut query = format!(
+            "SELECT
+                CASE
+                    WHEN {pay_expr} IS NULL THEN 'unspecified'
+                    WHEN {pay_expr} < 5.0 THEN 'lt5'
+                    WHEN {pay_expr} < 8.0 THEN '5_8'
+                    WHEN {pay_expr} < 11.0 THEN '8_11'
+                    WHEN {pay_expr} < 15.0 THEN '11_15'
+                    ELSE '15_plus'
+                END AS value,
+                COUNT(*) AS count
+             FROM jobs WHERE 1=1"
+        );
+        let mut bind_values: Vec<Value> = Vec::new();
+        push_job_filters(
+            &mut query,
+            &mut bind_values,
+            &JobQuery {
+                days_ago,
+                ..Default::default()
+            },
+        );
+        query.push_str(" GROUP BY value");
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), |row| {
+            Ok(JobFacetCount {
+                value: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        let mut facets = Vec::new();
+        for row in rows {
+            facets.push(row?);
+        }
+        Ok(facets)
     }
 
     /// Full-text search over jobs (title, company, summary) ranked by bm25.
@@ -633,7 +946,9 @@ impl Database {
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map(params![fts_query, limit as i64], row_to_job)?;
         let mut jobs = Vec::new();
-        for row in rows { jobs.push(row?); }
+        for row in rows {
+            jobs.push(row?);
+        }
         Ok(jobs)
     }
 
@@ -661,11 +976,18 @@ impl Database {
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
         let mut jobs = Vec::new();
-        for row in rows { jobs.push(row?); }
+        for row in rows {
+            jobs.push(row?);
+        }
         Ok(jobs)
     }
 
-    pub fn get_top_paying_jobs(&self, keyword_filter: Option<&str>, title_terms: &[String], limit: usize) -> Result<Vec<Job>, rusqlite::Error> {
+    pub fn get_top_paying_jobs(
+        &self,
+        keyword_filter: Option<&str>,
+        title_terms: &[String],
+        limit: usize,
+    ) -> Result<Vec<Job>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut query = String::from(
             "SELECT id, source, source_id, title, company, company_logo_url, pay, posted_at, url, summary, keyword, scraped_at, is_new, watchlisted, run_id, salary_min, salary_max, salary_currency, salary_period, applied, job_type
@@ -677,7 +999,10 @@ impl Database {
             bind_values.push(Value::Text(kw.to_string()));
         }
         if !title_terms.is_empty() {
-            let clauses: Vec<String> = title_terms.iter().map(|_| "LOWER(title) LIKE ?".to_string()).collect();
+            let clauses: Vec<String> = title_terms
+                .iter()
+                .map(|_| "LOWER(title) LIKE ?".to_string())
+                .collect();
             query.push_str(&format!(" AND ({})", clauses.join(" OR ")));
             for t in title_terms {
                 bind_values.push(Value::Text(format!("%{}%", t.to_lowercase())));
@@ -709,13 +1034,15 @@ impl Database {
                      END
              END DESC,
              salary_min DESC
-             LIMIT ?"
+             LIMIT ?",
         );
         bind_values.push(Value::Integer(limit as i64));
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
         let mut jobs = Vec::new();
-        for row in rows { jobs.push(row?); }
+        for row in rows {
+            jobs.push(row?);
+        }
         Ok(jobs)
     }
 
@@ -752,13 +1079,18 @@ impl Database {
         let mut stmt = conn.prepare("SELECT keyword FROM keywords ORDER BY keyword")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         let mut keywords = Vec::new();
-        for row in rows { keywords.push(row?); }
+        for row in rows {
+            keywords.push(row?);
+        }
         Ok(keywords)
     }
 
     pub fn add_keyword(&self, keyword: &str) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
-        conn.execute("INSERT OR IGNORE INTO keywords (keyword) VALUES (?1)", params![keyword])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO keywords (keyword) VALUES (?1)",
+            params![keyword],
+        )?;
         Ok(())
     }
 
@@ -768,7 +1100,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn save_resume_profile(&self, name: &str, source_file: Option<&str>, raw_text: &str, normalized_text: &str, now: &str) -> Result<ResumeProfile, rusqlite::Error> {
+    pub fn save_resume_profile(
+        &self,
+        name: &str,
+        source_file: Option<&str>,
+        raw_text: &str,
+        normalized_text: &str,
+        now: &str,
+    ) -> Result<ResumeProfile, rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute("UPDATE resume_profiles SET is_active = 0", [])?;
         conn.execute(
@@ -789,7 +1128,9 @@ impl Database {
         })
     }
 
-    pub fn list_resume_profile_summaries(&self) -> Result<Vec<ResumeProfileSummary>, rusqlite::Error> {
+    pub fn list_resume_profile_summaries(
+        &self,
+    ) -> Result<Vec<ResumeProfileSummary>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, source_file, created_at, updated_at, is_active
@@ -807,7 +1148,9 @@ impl Database {
             })
         })?;
         let mut out = Vec::new();
-        for row in rows { out.push(row?); }
+        for row in rows {
+            out.push(row?);
+        }
         Ok(out)
     }
 
@@ -821,7 +1164,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_resume_profile(&self, resume_id: i64) -> Result<Option<ResumeProfile>, rusqlite::Error> {
+    pub fn get_resume_profile(
+        &self,
+        resume_id: i64,
+    ) -> Result<Option<ResumeProfile>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, name, source_file, raw_text, normalized_text, created_at, updated_at, is_active
@@ -863,11 +1209,19 @@ impl Database {
             })
         })?;
         let mut out = Vec::new();
-        for row in rows { out.push(row?); }
+        for row in rows {
+            out.push(row?);
+        }
         Ok(out)
     }
 
-    pub fn upsert_job_embedding(&self, job_id: i64, model_name: &str, vector_json: &str, updated_at: &str) -> Result<(), rusqlite::Error> {
+    pub fn upsert_job_embedding(
+        &self,
+        job_id: i64,
+        model_name: &str,
+        vector_json: &str,
+        updated_at: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO job_embeddings (job_id, model_name, vector, updated_at)
@@ -879,7 +1233,13 @@ impl Database {
         Ok(())
     }
 
-    pub fn upsert_resume_embedding(&self, resume_id: i64, model_name: &str, vector_json: &str, updated_at: &str) -> Result<(), rusqlite::Error> {
+    pub fn upsert_resume_embedding(
+        &self,
+        resume_id: i64,
+        model_name: &str,
+        vector_json: &str,
+        updated_at: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO resume_embeddings (resume_id, model_name, vector, updated_at)
@@ -891,7 +1251,11 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_resume_embedding(&self, resume_id: i64, model_name: &str) -> Result<Option<String>, rusqlite::Error> {
+    pub fn get_resume_embedding(
+        &self,
+        resume_id: i64,
+        model_name: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT vector FROM resume_embeddings WHERE resume_id = ?1 AND model_name = ?2 LIMIT 1",
@@ -904,7 +1268,10 @@ impl Database {
         Ok(None)
     }
 
-    pub fn list_job_embeddings(&self, model_name: &str) -> Result<Vec<JobEmbeddingRow>, rusqlite::Error> {
+    pub fn list_job_embeddings(
+        &self,
+        model_name: &str,
+    ) -> Result<Vec<JobEmbeddingRow>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT e.job_id, j.title, j.company, j.pay, j.keyword, j.url, j.watchlisted, j.scraped_at, e.vector
@@ -926,11 +1293,17 @@ impl Database {
             })
         })?;
         let mut out = Vec::new();
-        for row in rows { out.push(row?); }
+        for row in rows {
+            out.push(row?);
+        }
         Ok(out)
     }
 
-    pub fn create_ai_conversation(&self, title: Option<&str>, now: &str) -> Result<AiConversation, rusqlite::Error> {
+    pub fn create_ai_conversation(
+        &self,
+        title: Option<&str>,
+        now: &str,
+    ) -> Result<AiConversation, rusqlite::Error> {
         let conn = self.conn()?;
         let title = title.unwrap_or("New Chat");
         conn.execute(
@@ -946,7 +1319,11 @@ impl Database {
         })
     }
 
-    pub fn maybe_set_ai_conversation_title(&self, conversation_id: i64, title: &str) -> Result<(), rusqlite::Error> {
+    pub fn maybe_set_ai_conversation_title(
+        &self,
+        conversation_id: i64,
+        title: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE ai_conversations
@@ -972,13 +1349,24 @@ impl Database {
             })
         })?;
         let mut out = Vec::new();
-        for row in rows { out.push(row?); }
+        for row in rows {
+            out.push(row?);
+        }
         Ok(out)
     }
 
-    pub fn append_ai_message(&self, conversation_id: i64, role: &str, content: &str, meta_json: &str, linked_job_ids: &[i64], now: &str) -> Result<AiMessage, rusqlite::Error> {
+    pub fn append_ai_message(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        meta_json: &str,
+        linked_job_ids: &[i64],
+        now: &str,
+    ) -> Result<AiMessage, rusqlite::Error> {
         let conn = self.conn()?;
-        let linked_json = serde_json::to_string(linked_job_ids).unwrap_or_else(|_| "[]".to_string());
+        let linked_json =
+            serde_json::to_string(linked_job_ids).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "INSERT INTO ai_messages (conversation_id, role, content, created_at, meta_json, linked_job_ids_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1020,14 +1408,22 @@ impl Database {
             })
         })?;
         let mut out = Vec::new();
-        for row in rows { out.push(row?); }
+        for row in rows {
+            out.push(row?);
+        }
         Ok(out)
     }
 
     pub fn delete_ai_conversation(&self, conversation_id: i64) -> Result<(), rusqlite::Error> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM ai_messages WHERE conversation_id = ?1", params![conversation_id])?;
-        conn.execute("DELETE FROM ai_conversations WHERE id = ?1", params![conversation_id])?;
+        conn.execute(
+            "DELETE FROM ai_messages WHERE conversation_id = ?1",
+            params![conversation_id],
+        )?;
+        conn.execute(
+            "DELETE FROM ai_conversations WHERE id = ?1",
+            params![conversation_id],
+        )?;
         Ok(())
     }
 
@@ -1037,10 +1433,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn embedding_index_status(&self, embedding_model: &str) -> Result<EmbeddingIndexStatus, rusqlite::Error> {
+    pub fn embedding_index_status(
+        &self,
+        embedding_model: &str,
+    ) -> Result<EmbeddingIndexStatus, rusqlite::Error> {
         let conn = self.conn()?;
         let jobs_total: i64 = conn.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
-        let resumes_total: i64 = conn.query_row("SELECT COUNT(*) FROM resume_profiles", [], |row| row.get(0))?;
+        let resumes_total: i64 =
+            conn.query_row("SELECT COUNT(*) FROM resume_profiles", [], |row| row.get(0))?;
         let jobs_indexed: i64 = conn.query_row(
             "SELECT COUNT(DISTINCT job_id) FROM job_embeddings WHERE model_name = ?1",
             params![embedding_model],
@@ -1074,18 +1474,24 @@ impl Database {
             ollama_base_url: get("ai_ollama_base_url").unwrap_or(default.ollama_base_url),
             ollama_model: get("ai_ollama_model").unwrap_or(default.ollama_model),
             embedding_model: get("ai_embedding_model").unwrap_or(default.embedding_model),
-            temperature: get("ai_temperature").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(default.temperature),
-            max_tokens: get("ai_max_tokens").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(default.max_tokens),
-            timeout_ms: get("ai_timeout_ms").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(default.timeout_ms),
+            temperature: get("ai_temperature")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(default.temperature),
+            max_tokens: get("ai_max_tokens")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(default.max_tokens),
+            timeout_ms: get("ai_timeout_ms")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(default.timeout_ms),
         }
         .with_supported_embedding_model())
     }
 
     pub fn set_ai_runtime_config(&self, cfg: &AiRuntimeConfig) -> Result<(), rusqlite::Error> {
-        let cfg = cfg
-            .clone()
-            .validated()
-            .map_err(invalid_config_error)?;
+        let cfg = cfg.clone().validated().map_err(invalid_config_error)?;
         let conn = self.conn()?;
         let upsert = |key: &str, value: String| -> Result<(), rusqlite::Error> {
             conn.execute(
@@ -1178,7 +1584,7 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_fts5_query, Database, Job};
+    use super::{build_fts5_query, Database, Job, JobQuery};
     use chrono::{Duration, Utc};
     use rusqlite::params;
     use tempfile::tempdir;
@@ -1212,8 +1618,8 @@ mod tests {
     #[test]
     fn duplicate_job_updates_to_latest_run_id() {
         let tmp = tempdir().expect("failed to create tempdir for test db");
-        let db = Database::new(tmp.path().to_path_buf())
-            .expect("Database::new failed on fresh tempdir");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
 
         let run1 = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
@@ -1242,13 +1648,11 @@ mod tests {
     #[test]
     fn foreign_keys_cascade_job_and_resume_embeddings() {
         let tmp = tempdir().expect("failed to create tempdir for test db");
-        let db = Database::new(tmp.path().to_path_buf())
-            .expect("Database::new failed on fresh tempdir");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
         let now = Utc::now().to_rfc3339();
 
-        let run_id = db
-            .insert_run("seo specialist", &now)
-            .expect("insert_run");
+        let run_id = db.insert_run("seo specialist", &now).expect("insert_run");
         let inserted = db
             .insert_job(&mk_job("cascade-1", now.clone()), run_id)
             .expect("insert job");
@@ -1300,8 +1704,8 @@ mod tests {
     #[test]
     fn days_filter_excludes_old_rows_with_julianday_comparison() {
         let tmp = tempdir().expect("failed to create tempdir for test db");
-        let db = Database::new(tmp.path().to_path_buf())
-            .expect("Database::new failed on fresh tempdir");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
         let run = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
             .expect("insert_run failed");
@@ -1321,10 +1725,109 @@ mod tests {
     }
 
     #[test]
+    fn query_jobs_applies_sql_filter_shape() {
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
+        let old_run = db
+            .insert_run("support", &(Utc::now() - Duration::minutes(1)).to_rfc3339())
+            .expect("insert old run");
+        let latest_run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("insert latest run");
+
+        let mut matching = mk_job("matching", Utc::now().to_rfc3339());
+        matching.source = "bruntwork".to_string();
+        matching.keyword = "seo specialist".to_string();
+        matching.job_type = "Full-time".to_string();
+        matching.pay = "$16/hr".to_string();
+        db.insert_job(&matching, latest_run)
+            .expect("insert matching job");
+
+        let mut other = mk_job("other", Utc::now().to_rfc3339());
+        other.keyword = String::new();
+        other.job_type = "Part-time".to_string();
+        other.pay = "$6/hr".to_string();
+        db.insert_job(&other, old_run).expect("insert other job");
+
+        let filtered = db
+            .query_jobs(JobQuery {
+                keyword: Some("seo specialist"),
+                source: Some("bruntwork"),
+                job_type: Some("Full-time"),
+                pay_range: Some("15_plus"),
+                run_id: Some(latest_run),
+                ..Default::default()
+            })
+            .expect("query filtered jobs");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].source_id, "matching");
+
+        let other_bucket = db
+            .query_jobs(JobQuery {
+                keyword: Some("Other"),
+                ..Default::default()
+            })
+            .expect("query other keyword bucket");
+        assert_eq!(other_bucket.len(), 1);
+        assert_eq!(other_bucket[0].source_id, "other");
+    }
+
+    #[test]
+    fn job_filter_options_returns_aggregated_counts() {
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
+        let old_run = db
+            .insert_run("support", &(Utc::now() - Duration::minutes(1)).to_rfc3339())
+            .expect("insert old run");
+        let latest_run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("insert latest run");
+
+        let mut high_pay = mk_job("high-pay", Utc::now().to_rfc3339());
+        high_pay.source = "bruntwork".to_string();
+        high_pay.job_type = "Full-time".to_string();
+        high_pay.pay = "$18/hr".to_string();
+        db.insert_job(&high_pay, latest_run)
+            .expect("insert high-pay job");
+
+        let mut undisclosed = mk_job("undisclosed", Utc::now().to_rfc3339());
+        undisclosed.keyword = String::new();
+        undisclosed.job_type = "Part-time".to_string();
+        undisclosed.pay = String::new();
+        db.insert_job(&undisclosed, old_run)
+            .expect("insert undisclosed job");
+
+        let options = db.job_filter_options(None).expect("filter options");
+        assert_eq!(options.latest_run_count, 1);
+        assert!(options
+            .sources
+            .iter()
+            .any(|item| item.value == "bruntwork" && item.count == 1));
+        assert!(options
+            .schedules
+            .iter()
+            .any(|item| item.value == "Full-time" && item.count == 1));
+        assert!(options
+            .keywords
+            .iter()
+            .any(|item| item.value == "Other" && item.count == 1));
+        assert!(options
+            .pay_ranges
+            .iter()
+            .any(|item| item.value == "15_plus" && item.count == 1));
+        assert!(options
+            .pay_ranges
+            .iter()
+            .any(|item| item.value == "unspecified" && item.count == 1));
+    }
+
+    #[test]
     fn get_jobs_by_ids_preserves_input_order() {
         let tmp = tempdir().expect("failed to create tempdir for test db");
-        let db = Database::new(tmp.path().to_path_buf())
-            .expect("Database::new failed on fresh tempdir");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
         let run = db
             .insert_run("seo specialist", &Utc::now().to_rfc3339())
             .expect("insert_run failed");
@@ -1394,7 +1897,8 @@ mod tests {
         let mut summary_only = mk_job("summary_only", Utc::now().to_rfc3339());
         summary_only.title = "Content Writer".to_string();
         summary_only.summary = "Some link building knowledge needed.".to_string();
-        db.insert_job(&summary_only, run).expect("insert summary only");
+        db.insert_job(&summary_only, run)
+            .expect("insert summary only");
 
         let mut unrelated = mk_job("unrelated", Utc::now().to_rfc3339());
         unrelated.title = "Bookkeeper".to_string();
@@ -1423,16 +1927,16 @@ mod tests {
         let mut monthly_usd = mk_job("monthly_usd", Utc::now().to_rfc3339());
         monthly_usd.title = "Monthly USD".to_string();
         monthly_usd.pay = "$1500/mo".to_string(); // 1500 USD/mo
-        db.insert_job(&monthly_usd, run).expect("insert monthly usd");
+        db.insert_job(&monthly_usd, run)
+            .expect("insert monthly usd");
 
         let mut monthly_php = mk_job("monthly_php", Utc::now().to_rfc3339());
         monthly_php.title = "Monthly PHP".to_string();
         monthly_php.pay = "₱55,000/mo".to_string(); // ~1000 USD/mo at /55
-        db.insert_job(&monthly_php, run).expect("insert monthly php");
+        db.insert_job(&monthly_php, run)
+            .expect("insert monthly php");
 
-        let ranked = db
-            .get_top_paying_jobs(None, &[], 3)
-            .expect("ranked jobs");
+        let ranked = db.get_top_paying_jobs(None, &[], 3).expect("ranked jobs");
         let titles: Vec<String> = ranked.iter().map(|j| j.title.clone()).collect();
         assert_eq!(titles, vec!["Hourly USD", "Monthly USD", "Monthly PHP"]);
     }
@@ -1440,8 +1944,8 @@ mod tests {
     #[test]
     fn get_ai_runtime_config_sanitizes_unsupported_embedding_model() {
         let tmp = tempdir().expect("failed to create tempdir for test db");
-        let db = Database::new(tmp.path().to_path_buf())
-            .expect("Database::new failed on fresh tempdir");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
 
         {
             let conn = db.conn().expect("db connection");
@@ -1461,12 +1965,10 @@ mod tests {
     #[test]
     fn set_ai_runtime_config_rejects_unsupported_embedding_model() {
         let tmp = tempdir().expect("failed to create tempdir for test db");
-        let db = Database::new(tmp.path().to_path_buf())
-            .expect("Database::new failed on fresh tempdir");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
 
-        let mut cfg = db
-            .get_ai_runtime_config()
-            .expect("get_ai_runtime_config");
+        let mut cfg = db.get_ai_runtime_config().expect("get_ai_runtime_config");
         cfg.embedding_model = "bge-small-en".to_string();
 
         let err = db
@@ -1496,9 +1998,7 @@ mod tests {
                 &now,
             )
             .expect("save resume");
-        let summaries = db
-            .list_resume_profile_summaries()
-            .expect("list summaries");
+        let summaries = db.list_resume_profile_summaries().expect("list summaries");
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, saved.id);
         assert_eq!(summaries[0].name, "Resume One");
