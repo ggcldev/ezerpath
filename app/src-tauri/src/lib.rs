@@ -4,11 +4,9 @@ pub mod db;
 mod services;
 
 use ai::ollama::OllamaClient;
-use ai::ollama::ChatMessage;
-use ai::prompts::{followup_resolution_schema, json_mode_system_suffix};
 use ai::ranking::cosine_similarity;
 use ai::{
-    AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiMessage,
+    AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiMessage,
     AiRuntimeConfig, EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult,
     ResumeProfileSummary,
 };
@@ -17,15 +15,12 @@ use crawler::{
     is_bruntwork_job_url, parse_allowed_job_url, Crawler, CrawlStats, JobDetailsPayload,
     ScanProgress,
 };
-use db::{AiRunLog, Database, Job, ScanRun};
+use db::{Database, Job, ScanRun};
 use services::ai_chat_service::{
-    assistant_meta, assistant_meta_full, begin_chat_turn, build_ollama_system_prompt,
-    classify_intent, compact_reply_text, format_followup_describe_reply,
-    format_followup_select_reply, get_linked_job_ids, handle_describe_intent,
+    begin_chat_turn, classify_intent, handle_describe_intent, handle_followup_intent,
     handle_general_chat_fallback, handle_ranking_intent, handle_search_keyword_intent,
-    intent_name, is_app_scope_query, is_prompt_injection_attempt, jobs_to_cards,
-    out_of_scope_reply, persist_blocked_chat_reply, response_violates_app_scope, ChatIntent,
-    FollowUpResolution,
+    intent_name, is_app_scope_query, is_prompt_injection_attempt, out_of_scope_reply,
+    persist_blocked_chat_reply, ChatIntent,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -533,207 +528,21 @@ async fn ai_chat(
         }
 
         ChatIntent::FollowUp => {
-            // Use linked job IDs from previous assistant message
-            let prev_ids = get_linked_job_ids(&recent);
-            if prev_ids.is_empty() {
-                // No prior linked jobs → the reference words ("those", "each
-                // of them", etc.) have nothing to resolve against. Short-circuit
-                // with a structured ambiguity error instead of burning an LLM
-                // call on a hallucinated answer.
-                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                let latency = started.elapsed().as_millis() as i64;
-                let reply = "I'm not sure which jobs you're referring to. Try searching or asking for a top list first, then I can describe or compare them."
-                    .to_string();
-                let _ = state.db.log_ai_run(&AiRunLog {
-                    task_type: "chat",
-                    latency_ms: latency,
-                    status: "ambiguous_reference",
-                    created_at: &now,
-                    intent: Some(intent_str),
-                    route: Some("followup_ambiguous"),
-                    retrieval_ms: Some(retrieval_ms),
-                    ..Default::default()
-                });
-                state.db.append_ai_message(
-                    convo_id, "assistant", &reply,
-                    &assistant_meta_full("local", None, None, Some("AMBIGUOUS_REFERENCE")),
-                    &[], &now,
-                ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse {
-                    conversation_id: convo_id,
-                    reply,
-                    cards: None,
-                    error: Some(AiChatError {
-                        code: "AMBIGUOUS_REFERENCE".to_string(),
-                        message: "No prior jobs linked in this conversation.".to_string(),
-                    }),
-                });
-            }
+            if let Some(response) = handle_followup_intent(
+                state.db.as_ref(),
+                &state.ollama,
+                &cfg,
+                convo_id,
+                &now,
+                started,
+                retrieval_start,
+                intent_str,
+                &message,
+                &recent,
+            )
+            .await?
             {
-                let linked_jobs = state.db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
-                if linked_jobs.is_empty() {
-                    // IDs exist in the transcript but the rows are gone (e.g.,
-                    // the scan was purged). Report it instead of silently
-                    // falling through — the user should know their referents
-                    // are no longer retrievable.
-                    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                    let latency = started.elapsed().as_millis() as i64;
-                    let reply = "The jobs from the earlier message are no longer available — they may have been removed by a later scan.".to_string();
-                    let _ = state.db.log_ai_run(&AiRunLog {
-                        task_type: "chat",
-                        latency_ms: latency,
-                        status: "missing_linked_results",
-                        created_at: &now,
-                        intent: Some(intent_str),
-                        route: Some("followup_missing_linked"),
-                        candidate_job_ids: Some(&prev_ids),
-                        retrieval_ms: Some(retrieval_ms),
-                        ..Default::default()
-                    });
-                    state.db.append_ai_message(
-                        convo_id, "assistant", &reply,
-                        &assistant_meta_full("local", None, None, Some("MISSING_LINKED_RESULTS")),
-                        &[], &now,
-                    ).map_err(|e| e.to_string())?;
-                    return Ok(AiChatResponse {
-                        conversation_id: convo_id,
-                        reply,
-                        cards: None,
-                        error: Some(AiChatError {
-                            code: "MISSING_LINKED_RESULTS".to_string(),
-                            message: "Linked job rows no longer exist.".to_string(),
-                        }),
-                    });
-                }
-                // Fast-path: try the local resolver before touching Ollama.
-                // Simple ordinal / prefix-count / select-all phrasing gets
-                // answered from prior cards + stored summaries with zero
-                // LLM cost and zero parse-failure surface. Anything the
-                // resolver isn't confident about falls through to the
-                // existing JSON-mode path untouched.
-                if let Some(action) = ai::followup::resolve_followup(&message, &prev_ids) {
-                    use ai::followup::FollowUpAction;
-                    let (selected_ids, wants_description) = match action {
-                        FollowUpAction::Select(ids) => (ids, false),
-                        FollowUpAction::Describe(ids) => (ids, true),
-                    };
-                    let selected_set: std::collections::HashSet<i64> =
-                        selected_ids.iter().copied().collect();
-                    let target_jobs: Vec<Job> = linked_jobs
-                        .iter()
-                        .filter(|j| j.id.map(|id| selected_set.contains(&id)).unwrap_or(false))
-                        .cloned()
-                        .collect();
-                    if !target_jobs.is_empty() {
-                        let reply = if wants_description {
-                            format_followup_describe_reply(&target_jobs)
-                        } else {
-                            format_followup_select_reply(&target_jobs)
-                        };
-                        let cards = jobs_to_cards(&target_jobs);
-                        let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                        let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                        let latency = started.elapsed().as_millis() as i64;
-                        let _ = state.db.log_ai_run(&AiRunLog {
-                            task_type: "chat",
-                            latency_ms: latency,
-                            status: "success_followup_local",
-                            created_at: &now,
-                            intent: Some(intent_str),
-                            route: Some(if wants_description {
-                                "followup_local_describe"
-                            } else {
-                                "followup_local_select"
-                            }),
-                            candidate_job_ids: Some(&prev_ids),
-                            final_job_ids: Some(&linked_ids),
-                            retrieval_ms: Some(retrieval_ms),
-                            ..Default::default()
-                        });
-                        state.db.append_ai_message(
-                            convo_id, "assistant", &reply,
-                            &assistant_meta("local", None, Some(&cards)),
-                            &linked_ids, &now,
-                        ).map_err(|e| e.to_string())?;
-                        return Ok(AiChatResponse {
-                            conversation_id: convo_id,
-                            reply,
-                            cards: Some(cards),
-                            error: None,
-                        });
-                    }
-                }
-                {
-                    // Build focused context for Ollama with only the linked jobs
-                    let system = build_ollama_system_prompt(&linked_jobs);
-                    let mut msgs: Vec<ChatMessage> = vec![ChatMessage { role: "system".to_string(), content: system }];
-                    for msg in &recent {
-                        if msg.role == "user" || msg.role == "assistant" {
-                            msgs.push(ChatMessage { role: msg.role.clone(), content: msg.content.clone() });
-                        }
-                    }
-                    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                    let candidate_ids: Vec<i64> = linked_jobs.iter().filter_map(|j| j.id).collect();
-                    // JSON-mode follow-up: ask Ollama to pick which prior job_ids
-                    // the user is referring to plus a one-line explanation. We
-                    // append a schema instruction to the system message so the
-                    // model knows the contract.
-                    let mut json_msgs = msgs.clone();
-                    if let Some(first) = json_msgs.first_mut() {
-                        if first.role == "system" {
-                            first.content.push_str(&json_mode_system_suffix(&candidate_ids));
-                        }
-                    }
-                    let llm_start = std::time::Instant::now();
-                    let json_reply: Result<FollowUpResolution, String> = state
-                        .ollama
-                        .chat_json(&cfg, json_msgs, followup_resolution_schema())
-                        .await;
-                    let llm_ms = llm_start.elapsed().as_millis() as i64;
-                    match json_reply {
-                        Ok(resolved) => {
-                            // Filter target IDs to ones that were actually in
-                            // the candidate set — model can hallucinate IDs.
-                            let allowed: std::collections::HashSet<i64> = candidate_ids.iter().copied().collect();
-                            let target_ids: Vec<i64> = resolved
-                                .target_job_ids
-                                .iter()
-                                .copied()
-                                .filter(|id| allowed.contains(id))
-                                .collect();
-                            let target_jobs = if target_ids.is_empty() {
-                                linked_jobs.clone()
-                            } else {
-                                state.db.get_jobs_by_ids(&target_ids).map_err(|e| e.to_string())?
-                            };
-                            let mut reply = compact_reply_text(&resolved.explanation);
-                            if response_violates_app_scope(&reply) { reply = out_of_scope_reply(); }
-                            let cards = jobs_to_cards(&target_jobs);
-                            let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                            let latency = started.elapsed().as_millis() as i64;
-                            let _ = state.db.log_ai_run(&AiRunLog {
-                                task_type: "chat",
-                                latency_ms: latency,
-                                status: "success_ollama_followup",
-                                created_at: &now,
-                                intent: Some(intent_str),
-                                route: Some("ollama_followup_json"),
-                                candidate_job_ids: Some(&candidate_ids),
-                                final_job_ids: Some(&linked_ids),
-                                retrieval_ms: Some(retrieval_ms),
-                                llm_ms: Some(llm_ms),
-                                ..Default::default()
-                            });
-                            state.db.append_ai_message(
-                                convo_id, "assistant", &reply,
-                                &assistant_meta("ollama", None, Some(&cards)),
-                                &linked_ids, &now,
-                            ).map_err(|e| e.to_string())?;
-                            return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
-                        }
-                        Err(_) => {} // fall through to general Ollama path
-                    }
-                }
+                return Ok(response);
             }
         }
 

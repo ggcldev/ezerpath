@@ -1,7 +1,7 @@
 use crate::ai::ollama::{ChatMessage, OllamaClient};
 use crate::ai::prompts::{
-    job_descriptions_response_schema, json_mode_system_suffix, system_prompt_for_job_chat,
-    top_jobs_response_schema,
+    followup_resolution_schema, job_descriptions_response_schema, json_mode_system_suffix,
+    system_prompt_for_job_chat, top_jobs_response_schema,
 };
 use crate::ai::ranking::rank_embeddings_against_query;
 use crate::ai::sentence_service::SentenceServiceClient;
@@ -783,6 +783,229 @@ Technical detail: {}",
         },
         error: None,
     })
+}
+
+pub(crate) async fn handle_followup_intent(
+    db: &Database,
+    ollama: &OllamaClient,
+    cfg: &AiRuntimeConfig,
+    conversation_id: i64,
+    now: &str,
+    started: std::time::Instant,
+    retrieval_start: std::time::Instant,
+    intent_name: &str,
+    message: &str,
+    recent: &[AiMessage],
+) -> Result<Option<AiChatResponse>, String> {
+    let prev_ids = get_linked_job_ids(recent);
+    if prev_ids.is_empty() {
+        let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+        let latency = started.elapsed().as_millis() as i64;
+        let reply = "I'm not sure which jobs you're referring to. Try searching or asking for a top list first, then I can describe or compare them."
+            .to_string();
+        let _ = db.log_ai_run(&AiRunLog {
+            task_type: "chat",
+            latency_ms: latency,
+            status: "ambiguous_reference",
+            created_at: now,
+            intent: Some(intent_name),
+            route: Some("followup_ambiguous"),
+            retrieval_ms: Some(retrieval_ms),
+            ..Default::default()
+        });
+        db.append_ai_message(
+            conversation_id,
+            "assistant",
+            &reply,
+            &assistant_meta_full("local", None, None, Some("AMBIGUOUS_REFERENCE")),
+            &[],
+            now,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(Some(AiChatResponse {
+            conversation_id,
+            reply,
+            cards: None,
+            error: Some(AiChatError {
+                code: "AMBIGUOUS_REFERENCE".to_string(),
+                message: "No prior jobs linked in this conversation.".to_string(),
+            }),
+        }));
+    }
+
+    let linked_jobs = db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
+    if linked_jobs.is_empty() {
+        let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+        let latency = started.elapsed().as_millis() as i64;
+        let reply = "The jobs from the earlier message are no longer available — they may have been removed by a later scan.".to_string();
+        let _ = db.log_ai_run(&AiRunLog {
+            task_type: "chat",
+            latency_ms: latency,
+            status: "missing_linked_results",
+            created_at: now,
+            intent: Some(intent_name),
+            route: Some("followup_missing_linked"),
+            candidate_job_ids: Some(&prev_ids),
+            retrieval_ms: Some(retrieval_ms),
+            ..Default::default()
+        });
+        db.append_ai_message(
+            conversation_id,
+            "assistant",
+            &reply,
+            &assistant_meta_full("local", None, None, Some("MISSING_LINKED_RESULTS")),
+            &[],
+            now,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(Some(AiChatResponse {
+            conversation_id,
+            reply,
+            cards: None,
+            error: Some(AiChatError {
+                code: "MISSING_LINKED_RESULTS".to_string(),
+                message: "Linked job rows no longer exist.".to_string(),
+            }),
+        }));
+    }
+
+    if let Some(action) = crate::ai::followup::resolve_followup(message, &prev_ids) {
+        use crate::ai::followup::FollowUpAction;
+        let (selected_ids, wants_description) = match action {
+            FollowUpAction::Select(ids) => (ids, false),
+            FollowUpAction::Describe(ids) => (ids, true),
+        };
+        let selected_set: std::collections::HashSet<i64> =
+            selected_ids.iter().copied().collect();
+        let target_jobs: Vec<Job> = linked_jobs
+            .iter()
+            .filter(|j| j.id.map(|id| selected_set.contains(&id)).unwrap_or(false))
+            .cloned()
+            .collect();
+        if !target_jobs.is_empty() {
+            let reply = if wants_description {
+                format_followup_describe_reply(&target_jobs)
+            } else {
+                format_followup_select_reply(&target_jobs)
+            };
+            let cards = jobs_to_cards(&target_jobs);
+            let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+            let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+            let latency = started.elapsed().as_millis() as i64;
+            let _ = db.log_ai_run(&AiRunLog {
+                task_type: "chat",
+                latency_ms: latency,
+                status: "success_followup_local",
+                created_at: now,
+                intent: Some(intent_name),
+                route: Some(if wants_description {
+                    "followup_local_describe"
+                } else {
+                    "followup_local_select"
+                }),
+                candidate_job_ids: Some(&prev_ids),
+                final_job_ids: Some(&linked_ids),
+                retrieval_ms: Some(retrieval_ms),
+                ..Default::default()
+            });
+            db.append_ai_message(
+                conversation_id,
+                "assistant",
+                &reply,
+                &assistant_meta("local", None, Some(&cards)),
+                &linked_ids,
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(Some(AiChatResponse {
+                conversation_id,
+                reply,
+                cards: Some(cards),
+                error: None,
+            }));
+        }
+    }
+
+    let system = build_ollama_system_prompt(&linked_jobs);
+    let mut msgs: Vec<ChatMessage> = vec![ChatMessage {
+        role: "system".to_string(),
+        content: system,
+    }];
+    for msg in recent {
+        if msg.role == "user" || msg.role == "assistant" {
+            msgs.push(ChatMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+            });
+        }
+    }
+    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+    let candidate_ids: Vec<i64> = linked_jobs.iter().filter_map(|j| j.id).collect();
+    let mut json_msgs = msgs.clone();
+    if let Some(first) = json_msgs.first_mut() {
+        if first.role == "system" {
+            first
+                .content
+                .push_str(&json_mode_system_suffix(&candidate_ids));
+        }
+    }
+    let llm_start = std::time::Instant::now();
+    let json_reply: Result<FollowUpResolution, String> = ollama
+        .chat_json(cfg, json_msgs, followup_resolution_schema())
+        .await;
+    let llm_ms = llm_start.elapsed().as_millis() as i64;
+    match json_reply {
+        Ok(resolved) => {
+            let allowed: std::collections::HashSet<i64> = candidate_ids.iter().copied().collect();
+            let target_ids: Vec<i64> = resolved
+                .target_job_ids
+                .iter()
+                .copied()
+                .filter(|id| allowed.contains(id))
+                .collect();
+            let target_jobs = if target_ids.is_empty() {
+                linked_jobs.clone()
+            } else {
+                db.get_jobs_by_ids(&target_ids).map_err(|e| e.to_string())?
+            };
+            let mut reply = compact_reply_text(&resolved.explanation);
+            if response_violates_app_scope(&reply) {
+                reply = out_of_scope_reply();
+            }
+            let cards = jobs_to_cards(&target_jobs);
+            let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+            let latency = started.elapsed().as_millis() as i64;
+            let _ = db.log_ai_run(&AiRunLog {
+                task_type: "chat",
+                latency_ms: latency,
+                status: "success_ollama_followup",
+                created_at: now,
+                intent: Some(intent_name),
+                route: Some("ollama_followup_json"),
+                candidate_job_ids: Some(&candidate_ids),
+                final_job_ids: Some(&linked_ids),
+                retrieval_ms: Some(retrieval_ms),
+                llm_ms: Some(llm_ms),
+                ..Default::default()
+            });
+            db.append_ai_message(
+                conversation_id,
+                "assistant",
+                &reply,
+                &assistant_meta("ollama", None, Some(&cards)),
+                &linked_ids,
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(Some(AiChatResponse {
+                conversation_id,
+                reply,
+                cards: Some(cards),
+                error: None,
+            }))
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 pub(crate) fn chat_title_from_query(message: &str) -> String {
