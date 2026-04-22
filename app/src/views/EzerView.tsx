@@ -2,13 +2,12 @@ import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bot, MessageSquarePlus, SendHorizontal, Sparkles, Trash2 } from "lucide-solid";
-import { animate } from "motion";
 import { animateViewEnter } from "../utils/viewMotion";
 import { shouldApplyConversationResponse } from "../utils/conversationLoad";
 import { openAllowlistedHttpsUrl } from "../utils/safeOpenUrl";
 import toast from "solid-toast";
 import ConfirmModal from "../components/ConfirmModal";
-import type { AiChatError, AiChatResponse, AiConversation, AiJobCard, AiMessage } from "../types/ipc";
+import type { AiChatResponse, AiConversation, AiJobCard, AiMessage } from "../types/ipc";
 
 interface AiMessageMeta {
   provider?: string;
@@ -109,10 +108,17 @@ export default function EzerView() {
     const fromY = role === "user" ? 8 : 10;
     const duration = role === "user" ? 0.2 : 0.24;
     const delay = role === "assistant" ? 0.04 : 0;
-    animate(
-      el,
-      { opacity: [0, 1], transform: [`translateY(${fromY}px)`, "translateY(0px)"] },
-      { duration, delay, easing: [0.2, 0.9, 0.25, 1] }
+    el.animate(
+      [
+        { opacity: 0, transform: `translateY(${fromY}px)` },
+        { opacity: 1, transform: "translateY(0px)" },
+      ],
+      {
+        duration: duration * 1000,
+        delay: delay * 1000,
+        easing: "cubic-bezier(0.2, 0.9, 0.25, 1)",
+        fill: "both",
+      }
     );
   };
 

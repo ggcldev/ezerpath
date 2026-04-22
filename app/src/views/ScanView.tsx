@@ -17,6 +17,7 @@ interface ProgressSnapshot {
   currentPage: number;
   liveFound: number;
   liveNew: number;
+  status: "running" | "completed" | "failed";
 }
 
 interface ScanViewProps {
@@ -78,6 +79,7 @@ export default function ScanView(props: ScanViewProps) {
             currentPage: 0,
             liveFound: 0,
             liveNew: 0,
+            status: "running",
           });
           break;
         case "keyword_started":
@@ -88,12 +90,19 @@ export default function ScanView(props: ScanViewProps) {
             currentPage: 0,
             liveFound,
             liveNew,
+            status: "running",
           }));
           break;
         case "page":
           setProgress((prev) =>
             prev
-              ? { ...prev, currentKeyword: msg.keyword, currentPage: msg.page, liveFound: liveFound + msg.found }
+              ? {
+                  ...prev,
+                  currentKeyword: msg.keyword,
+                  currentPage: msg.page,
+                  liveFound: liveFound + msg.found,
+                  status: "running",
+                }
               : prev
           );
           break;
@@ -101,14 +110,14 @@ export default function ScanView(props: ScanViewProps) {
           liveFound += msg.found;
           liveNew += msg.new;
           setProgress((prev) =>
-            prev ? { ...prev, currentPage: msg.pages, liveFound, liveNew } : prev
+            prev ? { ...prev, currentPage: msg.pages, liveFound, liveNew, status: "running" } : prev
           );
           break;
         case "bruntwork_keyword":
           liveFound += msg.found;
           liveNew += msg.new;
           setProgress((prev) =>
-            prev ? { ...prev, liveFound, liveNew } : prev
+            prev ? { ...prev, liveFound, liveNew, status: "running" } : prev
           );
           break;
         case "completed":
@@ -120,12 +129,15 @@ export default function ScanView(props: ScanViewProps) {
                   currentPage: PAGES_PER_KEYWORD,
                   liveFound: Number(msg.total_found),
                   liveNew: Number(msg.total_new),
+                  status: "completed",
                 }
               : prev
           );
           break;
         case "failed":
-          // Error handling lands in the catch below; nothing extra to do here.
+          setProgress((prev) =>
+            prev ? { ...prev, status: "failed" } : prev
+          );
           break;
       }
     };
@@ -145,9 +157,9 @@ export default function ScanView(props: ScanViewProps) {
       const message = String(e);
       props.setCrawlError(message);
       toast.error(`Scan failed: ${message}`, { id: loadingToast });
+      setProgress((prev) => (prev ? { ...prev, status: "failed" } : prev));
     }
     props.setCrawling(false);
-    setProgress(null);
   };
 
   const handleAddKeyword = async () => {
@@ -331,19 +343,34 @@ export default function ScanView(props: ScanViewProps) {
           </div>
 
           {/* Scanning state */}
-          <Show when={props.crawling()}>
+          <Show when={props.crawling() || progress()}>
             <div class="app-surface p-5 mb-4">
               <div class="flex items-center gap-3">
-                <div class="relative h-4 w-4 shrink-0">
-                  <div class="absolute inset-0 rounded-full border-[1.5px] border-mk-separator" />
-                  <div class="absolute inset-0 rounded-full border-[1.5px] border-mk-cyan border-t-transparent animate-spin" />
-                </div>
+                <Show
+                  when={progress()?.status === "running"}
+                  fallback={
+                    <div class={`h-4 w-4 shrink-0 rounded-full border-[1.5px] ${
+                      progress()?.status === "failed"
+                        ? "border-mk-pink"
+                        : "border-mk-green bg-mk-green/15"
+                    }`} />
+                  }
+                >
+                  <div class="relative h-4 w-4 shrink-0">
+                    <div class="absolute inset-0 rounded-full border-[1.5px] border-mk-separator" />
+                    <div class="absolute inset-0 rounded-full border-[1.5px] border-mk-cyan border-t-transparent animate-spin" />
+                  </div>
+                </Show>
                 <div class="min-w-0 flex-1">
                   <p class="text-[13px] font-medium text-mk-text">
                     <Show when={progress()} fallback="Starting scan…">
                       {(p) => (
                         <>
-                          Scanning <span class="text-mk-cyan">{p().currentKeyword || "…"}</span>
+                          {p().status === "failed"
+                            ? <>Scan failed on <span class="text-mk-pink">{p().currentKeyword || "…"}</span></>
+                            : p().status === "completed"
+                              ? <>Completed <span class="text-mk-green">{p().currentKeyword || "scan"}</span></>
+                              : <>Scanning <span class="text-mk-cyan">{p().currentKeyword || "…"}</span></>}
                           <Show when={p().currentPage > 0}>
                             <span class="text-mk-tertiary">
                               {" "}— page {p().currentPage}/{PAGES_PER_KEYWORD}
@@ -370,7 +397,13 @@ export default function ScanView(props: ScanViewProps) {
               </div>
               <div class="mt-3 h-[3px] bg-mk-fill rounded-full overflow-hidden">
                 <div
-                  class="h-full bg-mk-cyan rounded-full transition-[width] duration-300 ease-out"
+                  class={`h-full rounded-full transition-[width] duration-300 ease-out ${
+                    progress()?.status === "failed"
+                      ? "bg-mk-pink"
+                      : progress()?.status === "completed"
+                        ? "bg-mk-green"
+                        : "bg-mk-cyan"
+                  }`}
                   style={{ width: `${Math.max(4, progressFraction() * 100)}%` }}
                 />
               </div>

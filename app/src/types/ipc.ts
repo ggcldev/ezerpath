@@ -116,6 +116,7 @@ export interface JobDetailsPayload {
   company_logo_url: string;
   description: string;
   description_html: string;
+  job_type: string;
   posted_at: string;
 }
 

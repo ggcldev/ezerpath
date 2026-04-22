@@ -371,15 +371,10 @@ export default function JobDetailsDrawer(props: JobDetailsDrawerProps) {
                   when={!loadingDetails()}
                   fallback={<p class="text-[15px] leading-8 text-mk-secondary">Loading full job description...</p>}
                 >
-                  {() => {
-                    const html = buildDescriptionHtml(crawled(), job().summary);
-                    return (
-                      <div
-                        class="job-description-content text-[15px] text-mk-secondary [overflow-wrap:anywhere]"
-                        innerHTML={html || "<p>No description available.</p>"}
-                      />
-                    );
-                  }}
+                  <div
+                    class="job-description-content text-[15px] text-mk-secondary [overflow-wrap:anywhere]"
+                    innerHTML={buildDescriptionHtml(crawled(), job().summary) || "<p>No description available.</p>"}
+                  />
                 </Show>
               </div>
             </div>
