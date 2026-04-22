@@ -499,7 +499,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P3.4 - Centralize pay normalization
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -509,19 +509,19 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 **Exact tasks**
 
-- [ ] Choose one layer as the source of truth for pay normalization. Recommended: backend.
-- [ ] Expose normalized pay band or normalized hourly/monthly fields from the backend if the UI needs them.
-- [ ] Remove the duplicated parsing heuristics from `JobsView.tsx`.
-- [ ] Add regression tests for pay bucketing that match backend ranking assumptions.
+- [x] Choose one layer as the source of truth for pay normalization. Recommended: backend.
+- [x] Expose normalized pay band or normalized hourly/monthly fields from the backend if the UI needs them.
+- [x] Remove the duplicated parsing heuristics from `JobsView.tsx`.
+- [x] Add regression tests for pay bucketing that match backend ranking assumptions.
 
 **Acceptance criteria**
 
-- [ ] UI filters and backend salary ranking use the same normalization contract.
-- [ ] PHP/USD conversion and hourly/monthly heuristics do not diverge across layers.
+- [x] UI filters and backend salary ranking use the same normalization contract.
+- [x] PHP/USD conversion and hourly/monthly heuristics do not diverge across layers.
 
 **Suggested commit**
 
-- `refactor(pay): centralize pay normalization in backend contract`
+- `refactor(pay): centralize pay normalization in backend contract` (`DONE`)
 
 ### P3.5 - Centralize runtime config and typed IPC contracts
 

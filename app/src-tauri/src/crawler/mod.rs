@@ -489,6 +489,9 @@ fn parse_search_page(html: &str, keyword: &str) -> Result<Vec<Job>, String> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            normalized_pay_usd_hourly: None,
+            normalized_pay_usd_monthly: None,
+            pay_range: "unspecified".to_string(),
             applied: false,
             job_type,
         });
@@ -1001,6 +1004,9 @@ fn try_parse_bruntwork_next_data(html: &str, now: &str) -> Option<Vec<Job>> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            normalized_pay_usd_hourly: None,
+            normalized_pay_usd_monthly: None,
+            pay_range: "unspecified".to_string(),
             applied: false,
             job_type,
         });
@@ -1058,6 +1064,9 @@ fn parse_bruntwork_search_html(html: &str, now: &str) -> Result<Vec<Job>, String
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            normalized_pay_usd_hourly: None,
+            normalized_pay_usd_monthly: None,
+            pay_range: "unspecified".to_string(),
             applied: false,
             job_type,
         });

@@ -69,6 +69,9 @@ fn load_snapshot(db: &Database) -> HashMap<String, i64> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            normalized_pay_usd_hourly: None,
+            normalized_pay_usd_monthly: None,
+            pay_range: "unspecified".to_string(),
             applied: false,
             job_type: String::new(),
         };
@@ -223,6 +226,9 @@ fn seed_semantic_corpus(db: &Database) -> HashMap<String, i64> {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            normalized_pay_usd_hourly: None,
+            normalized_pay_usd_monthly: None,
+            pay_range: "unspecified".to_string(),
             applied: false,
             job_type: String::new(),
         };

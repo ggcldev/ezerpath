@@ -36,6 +36,9 @@ pub struct Job {
     pub salary_max: Option<f64>,
     pub salary_currency: String,
     pub salary_period: String,
+    pub normalized_pay_usd_hourly: Option<f64>,
+    pub normalized_pay_usd_monthly: Option<f64>,
+    pub pay_range: String,
     pub applied: bool,
     pub job_type: String,
 }
@@ -107,6 +110,9 @@ pub struct ParsedPay {
     pub currency: String,
     pub period: String,
 }
+
+pub const PAY_HOURS_PER_MONTH: f64 = 160.0;
+pub const PAY_PHP_PER_USD: f64 = 55.0;
 
 pub fn parse_pay(raw: &str) -> ParsedPay {
     let lower = raw.to_lowercase();
@@ -224,20 +230,66 @@ fn extract_numbers_from_pay(s: &str) -> Vec<f64> {
     nums
 }
 
-fn normalized_hourly_pay_sql() -> &'static str {
-    "CASE
+pub fn normalized_pay_usd_monthly(
+    salary_min: Option<f64>,
+    salary_currency: &str,
+    salary_period: &str,
+) -> Option<f64> {
+    let min = salary_min?;
+    if min <= 0.0 {
+        return None;
+    }
+    let monthly = match salary_period.trim().to_ascii_lowercase().as_str() {
+        "hourly" => min * PAY_HOURS_PER_MONTH,
+        "monthly" => min,
+        _ => min,
+    };
+    let usd = match salary_currency.trim().to_ascii_uppercase().as_str() {
+        "PHP" => monthly / PAY_PHP_PER_USD,
+        _ => monthly,
+    };
+    Some(usd)
+}
+
+pub fn normalized_pay_usd_hourly(
+    salary_min: Option<f64>,
+    salary_currency: &str,
+    salary_period: &str,
+) -> Option<f64> {
+    normalized_pay_usd_monthly(salary_min, salary_currency, salary_period)
+        .map(|monthly| monthly / PAY_HOURS_PER_MONTH)
+}
+
+pub fn pay_range_key_from_hourly(hourly: Option<f64>) -> &'static str {
+    match hourly {
+        None => "unspecified",
+        Some(v) if v < 5.0 => "lt5",
+        Some(v) if v < 8.0 => "5_8",
+        Some(v) if v < 11.0 => "8_11",
+        Some(v) if v < 15.0 => "11_15",
+        Some(_) => "15_plus",
+    }
+}
+
+fn normalized_monthly_pay_sql() -> String {
+    format!(
+        "CASE
         WHEN salary_min IS NULL THEN NULL
         ELSE
-            ((salary_min + COALESCE(salary_max, salary_min)) / 2.0)
-            * CASE LOWER(COALESCE(salary_period, ''))
-                WHEN 'monthly' THEN 1.0 / 160.0
+            salary_min * CASE LOWER(COALESCE(salary_period, ''))
+                WHEN 'hourly' THEN {PAY_HOURS_PER_MONTH}
                 ELSE 1.0
-              END
+            END
             / CASE UPPER(COALESCE(salary_currency, ''))
-                WHEN 'PHP' THEN 56.0
+                WHEN 'PHP' THEN {PAY_PHP_PER_USD}
                 ELSE 1.0
-              END
+            END
       END"
+    )
+}
+
+fn normalized_hourly_pay_sql() -> String {
+    format!("({}) / {PAY_HOURS_PER_MONTH}", normalized_monthly_pay_sql())
 }
 
 fn push_pay_range_filter(query: &mut String, pay_range: &str) {
@@ -245,33 +297,33 @@ fn push_pay_range_filter(query: &mut String, pay_range: &str) {
     match pay_range {
         "lt5" => {
             query.push_str(" AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" < 5.0");
         }
         "5_8" => {
             query.push_str(" AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" >= 5.0 AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" < 8.0");
         }
         "8_11" => {
             query.push_str(" AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" >= 8.0 AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" < 11.0");
         }
         "11_15" => {
             query.push_str(" AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" >= 11.0 AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" < 15.0");
         }
         "15_plus" => {
             query.push_str(" AND ");
-            query.push_str(expr);
+            query.push_str(&expr);
             query.push_str(" >= 15.0");
         }
         "unspecified" => query.push_str(" AND salary_min IS NULL"),
@@ -1008,34 +1060,9 @@ impl Database {
                 bind_values.push(Value::Text(format!("%{}%", t.to_lowercase())));
             }
         }
-        // Ranking normalization:
-        // - Convert hourly rates to monthly equivalent (160h / month)
-        // - Convert PHP to approximate USD for cross-currency ordering
-        query.push_str(
-            " ORDER BY
-             CASE UPPER(COALESCE(salary_currency, ''))
-                 WHEN 'PHP' THEN
-                     (CASE LOWER(COALESCE(salary_period, ''))
-                         WHEN 'hourly' THEN salary_min * 160.0
-                         WHEN 'monthly' THEN salary_min
-                         ELSE salary_min
-                     END) / 55.0
-                 WHEN 'USD' THEN
-                     CASE LOWER(COALESCE(salary_period, ''))
-                         WHEN 'hourly' THEN salary_min * 160.0
-                         WHEN 'monthly' THEN salary_min
-                         ELSE salary_min
-                     END
-                 ELSE
-                     CASE LOWER(COALESCE(salary_period, ''))
-                         WHEN 'hourly' THEN salary_min * 160.0
-                         WHEN 'monthly' THEN salary_min
-                         ELSE salary_min
-                     END
-             END DESC,
-             salary_min DESC
-             LIMIT ?",
-        );
+        query.push_str(" ORDER BY ");
+        query.push_str(&normalized_monthly_pay_sql());
+        query.push_str(" DESC, salary_min DESC LIMIT ?");
         bind_values.push(Value::Integer(limit as i64));
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map(params_from_iter(bind_values.iter()), row_to_job)?;
@@ -1557,6 +1584,16 @@ pub struct AiRunLog<'a> {
 }
 
 fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
+    let salary_min = row.get(15)?;
+    let salary_max = row.get(16)?;
+    let salary_currency = row.get::<_, String>(17).unwrap_or_default();
+    let salary_period = row.get::<_, String>(18).unwrap_or_default();
+    let normalized_pay_usd_monthly =
+        normalized_pay_usd_monthly(salary_min, &salary_currency, &salary_period);
+    let normalized_pay_usd_hourly =
+        normalized_pay_usd_hourly(salary_min, &salary_currency, &salary_period);
+    let pay_range = pay_range_key_from_hourly(normalized_pay_usd_hourly).to_string();
+
     Ok(Job {
         id: Some(row.get(0)?),
         source: row.get(1)?,
@@ -1573,10 +1610,13 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
         is_new: row.get::<_, i32>(12)? != 0,
         watchlisted: row.get::<_, i32>(13)? != 0,
         run_id: row.get(14)?,
-        salary_min: row.get(15)?,
-        salary_max: row.get(16)?,
-        salary_currency: row.get::<_, String>(17).unwrap_or_default(),
-        salary_period: row.get::<_, String>(18).unwrap_or_default(),
+        salary_min,
+        salary_max,
+        salary_currency,
+        salary_period,
+        normalized_pay_usd_hourly,
+        normalized_pay_usd_monthly,
+        pay_range,
         applied: row.get::<_, i32>(19).unwrap_or(0) != 0,
         job_type: row.get::<_, String>(20).unwrap_or_default(),
     })
@@ -1584,7 +1624,10 @@ fn row_to_job(row: &rusqlite::Row) -> Result<Job, rusqlite::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_fts5_query, Database, Job, JobQuery};
+    use super::{
+        build_fts5_query, normalized_pay_usd_hourly, normalized_pay_usd_monthly,
+        pay_range_key_from_hourly, Database, Job, JobQuery,
+    };
     use chrono::{Duration, Utc};
     use rusqlite::params;
     use tempfile::tempdir;
@@ -1610,6 +1653,9 @@ mod tests {
             salary_max: None,
             salary_currency: String::new(),
             salary_period: String::new(),
+            normalized_pay_usd_hourly: None,
+            normalized_pay_usd_monthly: None,
+            pay_range: "unspecified".to_string(),
             applied: false,
             job_type: String::new(),
         }
@@ -1821,6 +1867,51 @@ mod tests {
             .pay_ranges
             .iter()
             .any(|item| item.value == "unspecified" && item.count == 1));
+    }
+
+    #[test]
+    fn pay_normalization_contract_uses_backend_constants() {
+        let hourly = normalized_pay_usd_hourly(Some(825.0), "PHP", "hourly");
+        let monthly = normalized_pay_usd_monthly(Some(825.0), "PHP", "hourly");
+
+        assert_eq!(hourly, Some(15.0));
+        assert_eq!(monthly, Some(2400.0));
+        assert_eq!(pay_range_key_from_hourly(hourly), "15_plus");
+        assert_eq!(pay_range_key_from_hourly(None), "unspecified");
+    }
+
+    #[test]
+    fn pay_range_filter_uses_same_normalization_as_job_contract() {
+        let tmp = tempdir().expect("failed to create tempdir for test db");
+        let db =
+            Database::new(tmp.path().to_path_buf()).expect("Database::new failed on fresh tempdir");
+        let run = db
+            .insert_run("seo specialist", &Utc::now().to_rfc3339())
+            .expect("insert run");
+
+        let mut php_hourly = mk_job("php-hourly", Utc::now().to_rfc3339());
+        php_hourly.title = "PHP Hourly".to_string();
+        php_hourly.pay = "₱825/hr".to_string();
+        db.insert_job(&php_hourly, run)
+            .expect("insert php hourly");
+
+        let filtered = db
+            .query_jobs(JobQuery {
+                pay_range: Some("15_plus"),
+                ..Default::default()
+            })
+            .expect("query 15_plus jobs");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].source_id, "php-hourly");
+        assert_eq!(filtered[0].normalized_pay_usd_hourly, Some(15.0));
+        assert_eq!(filtered[0].normalized_pay_usd_monthly, Some(2400.0));
+        assert_eq!(filtered[0].pay_range, "15_plus");
+
+        let ranked = db
+            .get_top_paying_jobs(None, &[], 1)
+            .expect("ranked jobs");
+        assert_eq!(ranked[0].source_id, "php-hourly");
+        assert_eq!(ranked[0].normalized_pay_usd_monthly, Some(2400.0));
     }
 
     #[test]

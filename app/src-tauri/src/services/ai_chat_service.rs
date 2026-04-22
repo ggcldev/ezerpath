@@ -6,7 +6,7 @@ use crate::ai::prompts::{
 use crate::ai::ranking::rank_embeddings_against_query;
 use crate::ai::sentence_service::SentenceServiceClient;
 use crate::ai::{AiChatError, AiChatResponse, AiJobCard, AiMessage, AiRuntimeConfig};
-use crate::db::{parse_pay, AiRunLog, Database, Job, ScanRun};
+use crate::db::{normalized_pay_usd_monthly, parse_pay, AiRunLog, Database, Job, ScanRun};
 use serde::Deserialize;
 use std::cmp::Ordering;
 
@@ -1847,17 +1847,7 @@ pub(crate) fn job_pay_score_usd_monthly(job: &Job) -> Option<f64> {
         job.salary_period.to_lowercase()
     };
 
-    let monthly_amount = match period.as_str() {
-        "hourly" => min * 160.0,
-        "monthly" => min,
-        _ => min,
-    };
-
-    let usd_monthly = match currency.as_str() {
-        "PHP" => monthly_amount / 55.0,
-        _ => monthly_amount,
-    };
-    Some(usd_monthly)
+    normalized_pay_usd_monthly(Some(min), &currency, &period)
 }
 
 pub(crate) fn compare_jobs_for_ranking(a: &Job, b: &Job) -> Ordering {
