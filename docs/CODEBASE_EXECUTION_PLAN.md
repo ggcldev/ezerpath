@@ -433,7 +433,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P3.2 - Replace broad frontend invalidation with explicit resources
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -445,22 +445,22 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 **Exact tasks**
 
-- [ ] Replace the single `version()` bump pattern with separate refresh keys for:
+- [x] Replace the single `version()` bump pattern with separate refresh keys for:
   - jobs
   - runs
   - keywords
   - watchlist
-  - resume/settings state
-- [ ] Remove `setInterval`-based invalidation during scans.
-- [ ] Keep scan progress driven by the Tauri channel, not polling.
-- [ ] Ensure mutations refresh only the resources they actually affect.
-- [ ] Reduce duplicate `refetchKeywords()` / `refetchRuns()` calls caused by the current shared invalidation model.
+  - resume/settings state (`loadAiConfig`, `loadResumes`, and diagnostics remain explicit on-demand loads)
+- [x] Remove `setInterval`-based invalidation during scans.
+- [x] Keep scan progress driven by the Tauri channel, not polling.
+- [x] Ensure mutations refresh only the resources they actually affect.
+- [x] Reduce duplicate `refetchKeywords()` / `refetchRuns()` calls caused by the current shared invalidation model.
 
 **Acceptance criteria**
 
-- [ ] Watchlist/applied toggles no longer refetch unrelated resources.
-- [ ] Scans do not rely on interval-driven resource bumps.
-- [ ] Resource flow is understandable per feature.
+- [x] Watchlist/applied toggles no longer refetch unrelated resources.
+- [x] Scans do not rely on interval-driven resource bumps.
+- [x] Resource flow is understandable per feature.
 
 **Suggested commit**
 

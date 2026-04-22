@@ -48,6 +48,7 @@ interface ScanViewProps {
   setEnabledSources: (v: string[]) => void;
   onScanStart: () => void;
   onScanComplete: () => void;
+  onKeywordsChange: () => void;
 }
 
 export default function ScanView(props: ScanViewProps) {
@@ -171,7 +172,7 @@ export default function ScanView(props: ScanViewProps) {
       () => invoke("add_keyword", { keyword: kw }),
       () => {
         setNewKeyword("");
-        props.onScanComplete();
+        props.onKeywordsChange();
       },
       props.setCrawlError
     );
@@ -185,7 +186,7 @@ export default function ScanView(props: ScanViewProps) {
   const handleRemoveKeyword = async (kw: string) => {
     const ok = await runMutation(
       () => invoke("remove_keyword", { keyword: kw }),
-      props.onScanComplete,
+      props.onKeywordsChange,
       props.setCrawlError
     );
     if (ok) {

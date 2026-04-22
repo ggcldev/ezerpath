@@ -1,4 +1,4 @@
-import { createSignal, createResource, createEffect, onCleanup, Match, Switch, Show } from "solid-js";
+import { createSignal, createResource, createEffect, Match, Switch, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Sidebar, { type View, type ScanRun } from "./components/Sidebar";
 import ConfirmModal from "./components/ConfirmModal";
@@ -87,7 +87,10 @@ function App() {
   const [crawling, setCrawling] = createSignal(false);
   const [crawlResult, setCrawlResult] = createSignal<CrawlStats[] | null>(null);
   const [crawlError, setCrawlError] = createSignal("");
-  const [version, setVersion] = createSignal(0);
+  const [jobsRefreshKey, setJobsRefreshKey] = createSignal(0);
+  const [runsRefreshKey, setRunsRefreshKey] = createSignal(0);
+  const [keywordsRefreshKey, setKeywordsRefreshKey] = createSignal(0);
+  const [watchlistRefreshKey, setWatchlistRefreshKey] = createSignal(0);
   const [dark, setDark] = createSignal(true);
   const [dateRange, setDateRange] = createSignal<number>(3);
   const [enabledSources, setEnabledSources] = createSignal<string[]>(["onlinejobs", "bruntwork"]);
@@ -121,38 +124,43 @@ function App() {
     document.documentElement.classList.toggle("dark", dark());
   });
 
-  const bump = () => setVersion((v) => v + 1);
-
-  createEffect(() => {
-    if (!crawling()) return;
-    const id = setInterval(() => bump(), 1500);
-    onCleanup(() => clearInterval(id));
-  });
+  const refreshJobs = () => setJobsRefreshKey((v) => v + 1);
+  const refreshRuns = () => setRunsRefreshKey((v) => v + 1);
+  const refreshKeywords = () => setKeywordsRefreshKey((v) => v + 1);
+  const refreshWatchlist = () => setWatchlistRefreshKey((v) => v + 1);
+  const refreshScanResults = () => {
+    refreshJobs();
+    refreshRuns();
+    refreshWatchlist();
+  };
 
   const [jobs] = createResource(
-    () => [version(), dateRange()] as const,
+    () => [jobsRefreshKey(), dateRange()] as const,
     ([, days]) => invoke<Job[]>("get_jobs", { keyword: null, watchlistedOnly: false, daysAgo: days })
   );
 
   const [watchlistJobs] = createResource(
-    () => version(),
+    () => watchlistRefreshKey(),
     () => loadWatchlistJobs<Job>()
   );
 
-  const [keywords, { refetch: refetchKeywords }] = createResource(
-    () => version(),
+  const [keywords] = createResource(
+    () => keywordsRefreshKey(),
     () => invoke<string[]>("get_keywords")
   );
 
-  const [runs, { refetch: refetchRuns }] = createResource(
-    () => version(),
+  const [runs] = createResource(
+    () => runsRefreshKey(),
     () => invoke<ScanRun[]>("get_runs")
   );
 
   const handleToggleWatchlist = async (jobId: number) => {
     await runMutation(
       () => invoke("toggle_watchlist", { jobId }),
-      bump,
+      () => {
+        refreshJobs();
+        refreshWatchlist();
+      },
       setGlobalError
     );
   };
@@ -160,7 +168,7 @@ function App() {
   const handleToggleApplied = async (jobId: number) => {
     await runMutation(
       () => invoke("toggle_applied", { jobId }),
-      bump,
+      refreshWatchlist,
       setGlobalError
     );
   };
@@ -168,7 +176,7 @@ function App() {
   const handleDeleteRun = async (runId: number) => {
     const ok = await runMutation(
       () => invoke("delete_run", { runId }),
-      bump,
+      refreshScanResults,
       setGlobalError
     );
     if (ok) {
@@ -181,12 +189,10 @@ function App() {
   const handleClearAll = async () => {
     const ok = await runMutation(
       () => invoke("clear_all_jobs"),
-      bump,
+      refreshScanResults,
       setGlobalError
     );
     if (ok) {
-      refetchKeywords();
-      refetchRuns();
       toast.success("Cleared all jobs and scan history.");
     } else {
       toast.error("Failed to clear jobs.");
@@ -402,7 +408,8 @@ function App() {
               enabledSources={enabledSources}
               setEnabledSources={setEnabledSources}
               onScanStart={handleScanStart}
-              onScanComplete={() => { bump(); refetchKeywords(); refetchRuns(); }}
+              onScanComplete={refreshScanResults}
+              onKeywordsChange={refreshKeywords}
             />
           </Match>
           <Match when={view() === "jobs"}>
