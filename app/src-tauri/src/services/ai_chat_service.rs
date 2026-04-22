@@ -1,4 +1,5 @@
-use crate::ai::prompts::system_prompt_for_job_chat;
+use crate::ai::ollama::{ChatMessage, OllamaClient};
+use crate::ai::prompts::{job_descriptions_response_schema, json_mode_system_suffix, system_prompt_for_job_chat};
 use crate::ai::ranking::rank_embeddings_against_query;
 use crate::ai::sentence_service::SentenceServiceClient;
 use crate::ai::{AiChatError, AiChatResponse, AiJobCard, AiMessage, AiRuntimeConfig};
@@ -272,6 +273,158 @@ pub(crate) async fn handle_search_keyword_intent(
             message: format!("No jobs matched '{query}'."),
         }),
     })
+}
+
+pub(crate) async fn handle_describe_intent(
+    db: &Database,
+    ollama: &OllamaClient,
+    cfg: &AiRuntimeConfig,
+    conversation_id: i64,
+    now: &str,
+    started: std::time::Instant,
+    retrieval_start: std::time::Instant,
+    intent_name: &str,
+    message: &str,
+    jobs: &[Job],
+    recent: &[AiMessage],
+    n: usize,
+) -> Result<Option<AiChatResponse>, String> {
+    let prev_ids = get_linked_job_ids(recent);
+    let target_jobs = if !prev_ids.is_empty() {
+        let linked = db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
+        if !linked.is_empty() {
+            linked
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let target_jobs = if target_jobs.is_empty() {
+        let runs = db.get_runs().map_err(|e| e.to_string())?;
+        let scoped = scoped_jobs_for_message(message, jobs, &runs);
+        scoped.into_iter().take(n).collect::<Vec<_>>()
+    } else {
+        target_jobs
+    };
+
+    if target_jobs.is_empty() {
+        return Ok(None);
+    }
+
+    let has_summaries = target_jobs.iter().any(|j| !j.summary.trim().is_empty());
+    if has_summaries {
+        let reply = format_describe_reply(&target_jobs);
+        let cards = jobs_to_cards(&target_jobs);
+        let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+        let candidate_ids: Vec<i64> = target_jobs.iter().filter_map(|j| j.id).collect();
+        let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+        let latency = started.elapsed().as_millis() as i64;
+        let _ = db.log_ai_run(&AiRunLog {
+            task_type: "chat",
+            latency_ms: latency,
+            status: "success_local",
+            created_at: now,
+            intent: Some(intent_name),
+            route: Some("local_describe"),
+            candidate_job_ids: Some(&candidate_ids),
+            final_job_ids: Some(&linked_ids),
+            retrieval_ms: Some(retrieval_ms),
+            ..Default::default()
+        });
+        db.append_ai_message(
+            conversation_id,
+            "assistant",
+            &reply,
+            &assistant_meta("local", None, Some(&cards)),
+            &linked_ids,
+            now,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(Some(AiChatResponse {
+            conversation_id,
+            reply,
+            cards: Some(cards),
+            error: None,
+        }));
+    }
+
+    let candidate_ids: Vec<i64> = target_jobs.iter().filter_map(|j| j.id).collect();
+    let system = build_ollama_system_prompt(&target_jobs) + &json_mode_system_suffix(&candidate_ids);
+    let json_msgs = vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: system,
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: message.to_string(),
+        },
+    ];
+    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+    let llm_start = std::time::Instant::now();
+    let json_reply: Result<JobDescriptionsResponse, String> = ollama
+        .chat_json(cfg, json_msgs, job_descriptions_response_schema())
+        .await;
+    let llm_ms = llm_start.elapsed().as_millis() as i64;
+    if let Ok(parsed) = json_reply {
+        let allowed: std::collections::HashSet<i64> = candidate_ids.iter().copied().collect();
+        let valid: Vec<JobDescriptionItem> = parsed
+            .jobs
+            .into_iter()
+            .filter(|j| allowed.contains(&j.job_id))
+            .collect();
+        if !valid.is_empty() {
+            let ids: Vec<i64> = valid.iter().map(|v| v.job_id).collect();
+            let lookup = db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())?;
+            let mut lines = vec![format!("Descriptions for {} jobs:", valid.len())];
+            for (i, item) in valid.iter().enumerate() {
+                let title = lookup
+                    .iter()
+                    .find(|j| j.id == Some(item.job_id))
+                    .map(|j| j.title.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("{}. {}", i + 1, title));
+                lines.push(format!("   {}", short_description(&item.description)));
+            }
+            lines.push("Open any card below for full details.".to_string());
+            let reply = lines.join("\n");
+            let cards = jobs_to_cards(&lookup);
+            let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+            let latency = started.elapsed().as_millis() as i64;
+            let _ = db.log_ai_run(&AiRunLog {
+                task_type: "chat",
+                latency_ms: latency,
+                status: "success_ollama",
+                created_at: now,
+                intent: Some(intent_name),
+                route: Some("ollama_describe_json"),
+                candidate_job_ids: Some(&candidate_ids),
+                final_job_ids: Some(&linked_ids),
+                retrieval_ms: Some(retrieval_ms),
+                llm_ms: Some(llm_ms),
+                ..Default::default()
+            });
+            db.append_ai_message(
+                conversation_id,
+                "assistant",
+                &reply,
+                &assistant_meta("ollama", None, Some(&cards)),
+                &linked_ids,
+                now,
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok(Some(AiChatResponse {
+                conversation_id,
+                reply,
+                cards: Some(cards),
+                error: None,
+            }));
+        }
+    }
+
+    Ok(None)
 }
 
 pub(crate) fn chat_title_from_query(message: &str) -> String {

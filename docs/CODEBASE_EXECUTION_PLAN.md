@@ -403,7 +403,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - `commands/settings.rs`
 - [ ] Create service modules:
   - [x] `services/scan_service.rs`
-  - [ ] `services/ai_chat_service.rs` (`IN PROGRESS`: turn setup, blocked replies, keyword search handling, routing, formatting, JSON response shapes, and semantic fallback extracted)
+  - [ ] `services/ai_chat_service.rs` (`IN PROGRESS`: turn setup, blocked replies, keyword search and describe handling, routing, formatting, JSON response shapes, and semantic fallback extracted)
   - [x] `services/runtime_service.rs`
 - [x] Retire sidecar-specific runtime code before extracting the runtime service:
   - remove HTTP `/embed` and `/extract-text` fallbacks from `sentence_service.rs`

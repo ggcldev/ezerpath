@@ -6,8 +6,7 @@ mod services;
 use ai::ollama::OllamaClient;
 use ai::ollama::ChatMessage;
 use ai::prompts::{
-    followup_resolution_schema, job_descriptions_response_schema, json_mode_system_suffix,
-    top_jobs_response_schema,
+    followup_resolution_schema, json_mode_system_suffix, top_jobs_response_schema,
 };
 use ai::ranking::cosine_similarity;
 use ai::{
@@ -24,12 +23,11 @@ use db::{AiRunLog, Database, Job, ScanRun};
 use services::ai_chat_service::{
     assistant_meta, assistant_meta_full, begin_chat_turn, build_ollama_system_prompt,
     classify_intent, compact_reply_text, compare_jobs_for_ranking, extract_cards_from_reply,
-    format_describe_reply, format_followup_describe_reply, format_followup_select_reply,
-    format_ranking_reply, get_linked_job_ids, handle_search_keyword_intent, intent_name,
+    format_followup_describe_reply, format_followup_select_reply, format_ranking_reply,
+    get_linked_job_ids, handle_describe_intent, handle_search_keyword_intent, intent_name,
     is_app_scope_query, is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards,
     out_of_scope_reply, persist_blocked_chat_reply, response_violates_app_scope,
-    scoped_jobs_for_message, short_description, wants_descriptions, ChatIntent,
-    FollowUpResolution, JobDescriptionItem, JobDescriptionsResponse, TopJobsResponse,
+    scoped_jobs_for_message, wants_descriptions, ChatIntent, FollowUpResolution, TopJobsResponse,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -865,116 +863,23 @@ async fn ai_chat(
         }
 
         ChatIntent::Describe { n } => {
-            // First try linked jobs from previous message
-            let prev_ids = get_linked_job_ids(&recent);
-            let target_jobs = if !prev_ids.is_empty() {
-                let linked = state.db.get_jobs_by_ids(&prev_ids).map_err(|e| e.to_string())?;
-                if !linked.is_empty() { linked } else { Vec::new() }
-            } else {
-                Vec::new()
-            };
-
-            let target_jobs = if target_jobs.is_empty() {
-                // No linked jobs — scope from message
-                let runs = state.db.get_runs().map_err(|e| e.to_string())?;
-                let scoped = scoped_jobs_for_message(&message, &jobs, &runs);
-                scoped.into_iter().take(n).collect::<Vec<_>>()
-            } else {
-                target_jobs
-            };
-
-            if !target_jobs.is_empty() {
-                // If any job has a summary, build local reply
-                let has_summaries = target_jobs.iter().any(|j| !j.summary.trim().is_empty());
-                if has_summaries {
-                    let reply = format_describe_reply(&target_jobs);
-                    let cards = jobs_to_cards(&target_jobs);
-                    let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                    let candidate_ids: Vec<i64> = target_jobs.iter().filter_map(|j| j.id).collect();
-                    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                    let latency = started.elapsed().as_millis() as i64;
-                    let _ = state.db.log_ai_run(&AiRunLog {
-                        task_type: "chat",
-                        latency_ms: latency,
-                        status: "success_local",
-                        created_at: &now,
-                        intent: Some(intent_str),
-                        route: Some("local_describe"),
-                        candidate_job_ids: Some(&candidate_ids),
-                        final_job_ids: Some(&linked_ids),
-                        retrieval_ms: Some(retrieval_ms),
-                        ..Default::default()
-                    });
-                    state.db.append_ai_message(
-                        convo_id, "assistant", &reply,
-                        &assistant_meta("local", None, Some(&cards)),
-                        &linked_ids, &now,
-                    ).map_err(|e| e.to_string())?;
-                    return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
-                }
-
-                // No summaries — ask Ollama in JSON mode for typed
-                // descriptions keyed by job_id, then format locally.
-                let candidate_ids: Vec<i64> = target_jobs.iter().filter_map(|j| j.id).collect();
-                let system = build_ollama_system_prompt(&target_jobs) + &json_mode_system_suffix(&candidate_ids);
-                let json_msgs = vec![
-                    ChatMessage { role: "system".to_string(), content: system },
-                    ChatMessage { role: "user".to_string(), content: message.clone() },
-                ];
-                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                let llm_start = std::time::Instant::now();
-                let json_reply: Result<JobDescriptionsResponse, String> = state
-                    .ollama
-                    .chat_json(&cfg, json_msgs, job_descriptions_response_schema())
-                    .await;
-                let llm_ms = llm_start.elapsed().as_millis() as i64;
-                if let Ok(parsed) = json_reply {
-                    let allowed: std::collections::HashSet<i64> = candidate_ids.iter().copied().collect();
-                    let valid: Vec<JobDescriptionItem> = parsed
-                        .jobs
-                        .into_iter()
-                        .filter(|j| allowed.contains(&j.job_id))
-                        .collect();
-                    if !valid.is_empty() {
-                        let ids: Vec<i64> = valid.iter().map(|v| v.job_id).collect();
-                        let lookup = state.db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())?;
-                        let mut lines = vec![format!("Descriptions for {} jobs:", valid.len())];
-                        for (i, item) in valid.iter().enumerate() {
-                            let title = lookup
-                                .iter()
-                                .find(|j| j.id == Some(item.job_id))
-                                .map(|j| j.title.as_str())
-                                .unwrap_or("?");
-                            lines.push(format!("{}. {}", i + 1, title));
-                            lines.push(format!("   {}", short_description(&item.description)));
-                        }
-                        lines.push("Open any card below for full details.".to_string());
-                        let reply = lines.join("\n");
-                        let cards = jobs_to_cards(&lookup);
-                        let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                        let latency = started.elapsed().as_millis() as i64;
-                        let _ = state.db.log_ai_run(&AiRunLog {
-                            task_type: "chat",
-                            latency_ms: latency,
-                            status: "success_ollama",
-                            created_at: &now,
-                            intent: Some(intent_str),
-                            route: Some("ollama_describe_json"),
-                            candidate_job_ids: Some(&candidate_ids),
-                            final_job_ids: Some(&linked_ids),
-                            retrieval_ms: Some(retrieval_ms),
-                            llm_ms: Some(llm_ms),
-                            ..Default::default()
-                        });
-                        state.db.append_ai_message(
-                            convo_id, "assistant", &reply,
-                            &assistant_meta("ollama", None, Some(&cards)),
-                            &linked_ids, &now,
-                        ).map_err(|e| e.to_string())?;
-                        return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
-                    }
-                }
-                // JSON-mode failed or empty — fall through to general Ollama.
+            if let Some(response) = handle_describe_intent(
+                state.db.as_ref(),
+                &state.ollama,
+                &cfg,
+                convo_id,
+                &now,
+                started,
+                retrieval_start,
+                intent_str,
+                &message,
+                &jobs,
+                &recent,
+                n,
+            )
+            .await?
+            {
+                return Ok(response);
             }
         }
 
