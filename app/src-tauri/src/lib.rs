@@ -2142,6 +2142,11 @@ async fn ai_start_scan_with_keywords(
     run_crawl_inner(state.inner(), days, None, None).await
 }
 
+#[tauri::command]
+fn backend_diagnostics() -> ai_service_manager::BackendDiagnostics {
+    ai_service_manager::snapshot()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
@@ -2169,7 +2174,12 @@ pub fn run() {
                 .map_err(|e| std::io::Error::other(format!("failed to init sentence service client: {e}")))?;
             // Spawn the bundled Python AI + scrapling service. Runs in a
             // background thread so app boot isn't blocked. Killed on drop.
-            let ai_service = std::thread::spawn(ai_service_manager::start)
+            let log_dir = app
+                .path()
+                .app_log_dir()
+                .or_else(|_| app.path().app_data_dir().map(|p| p.join("logs")))
+                .unwrap_or_else(|_| std::path::PathBuf::from("./logs"));
+            let ai_service = std::thread::spawn(move || ai_service_manager::start(log_dir))
                 .join()
                 .unwrap_or_else(|_| ai_service_manager::ServiceHandle { child: None });
             let webview_scraper = crawler::webview_scraper::WebviewScraperState::new();
@@ -2221,6 +2231,7 @@ pub fn run() {
             ai_summarize_job,
             ai_compare_jobs,
             ai_start_scan_with_keywords,
+            backend_diagnostics,
             crawler::webview_scraper::scraper_webview_deliver,
         ])
         .run(tauri::generate_context!());
