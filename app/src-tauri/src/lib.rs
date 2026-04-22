@@ -5,9 +5,7 @@ mod services;
 
 use ai::ollama::OllamaClient;
 use ai::ollama::ChatMessage;
-use ai::prompts::{
-    followup_resolution_schema, json_mode_system_suffix, top_jobs_response_schema,
-};
+use ai::prompts::{followup_resolution_schema, json_mode_system_suffix};
 use ai::ranking::cosine_similarity;
 use ai::{
     AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiMessage,
@@ -22,12 +20,11 @@ use crawler::{
 use db::{AiRunLog, Database, Job, ScanRun};
 use services::ai_chat_service::{
     assistant_meta, assistant_meta_full, begin_chat_turn, build_ollama_system_prompt,
-    classify_intent, compact_reply_text, compare_jobs_for_ranking, extract_cards_from_reply,
-    format_followup_describe_reply, format_followup_select_reply, format_ranking_reply,
-    get_linked_job_ids, handle_describe_intent, handle_search_keyword_intent, intent_name,
-    is_app_scope_query, is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards,
-    out_of_scope_reply, persist_blocked_chat_reply, response_violates_app_scope,
-    scoped_jobs_for_message, wants_descriptions, ChatIntent, FollowUpResolution, TopJobsResponse,
+    classify_intent, compact_reply_text, extract_cards_from_reply, format_followup_describe_reply,
+    format_followup_select_reply, get_linked_job_ids, handle_describe_intent,
+    handle_ranking_intent, handle_search_keyword_intent, intent_name, is_app_scope_query,
+    is_prompt_injection_attempt, jobs_to_cards, out_of_scope_reply, persist_blocked_chat_reply,
+    response_violates_app_scope, ChatIntent, FollowUpResolution,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -513,147 +510,24 @@ async fn ai_chat(
 
     match intent {
         ChatIntent::Ranking { n, ref title_terms } => {
-            // SQL-first: query DB sorted by normalized pay score
-            let sql_jobs = state.db
-                .get_top_paying_jobs(keyword.as_deref(), title_terms, n)
-                .map_err(|e| e.to_string())?;
-
-            // If SQL returned results with salary data, use them directly
-            if !sql_jobs.is_empty() {
-                let include_desc = wants_descriptions(&message);
-                let reply = format_ranking_reply(&sql_jobs, include_desc, true);
-                let cards = jobs_to_cards(&sql_jobs);
-                let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                let candidate_ids: Vec<i64> = sql_jobs.iter().filter_map(|j| j.id).collect();
-                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                let latency = started.elapsed().as_millis() as i64;
-                let _ = state.db.log_ai_run(&AiRunLog {
-                    task_type: "chat",
-                    latency_ms: latency,
-                    status: "success_sql",
-                    created_at: &now,
-                    intent: Some(intent_str),
-                    route: Some("sql_first"),
-                    candidate_job_ids: Some(&candidate_ids),
-                    final_job_ids: Some(&linked_ids),
-                    retrieval_ms: Some(retrieval_ms),
-                    ..Default::default()
-                });
-                state.db.append_ai_message(
-                    convo_id, "assistant", &reply,
-                    &assistant_meta("sql", None, Some(&cards)),
-                    &linked_ids, &now,
-                ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
-            }
-
-            // Fallback: rank in-memory using normalized pay score, then recency.
-            let mut scoped = scoped_jobs_for_message(&message, &jobs, &state.db.get_runs().map_err(|e| e.to_string())?);
-            scoped.sort_by(compare_jobs_for_ranking);
-            let top: Vec<Job> = scoped.into_iter().take(n).collect();
-            if !top.is_empty() {
-                let include_desc = wants_descriptions(&message);
-                let has_pay_scores = top.iter().any(|j| job_pay_score_usd_monthly(j).is_some());
-                let reply = format_ranking_reply(&top, include_desc, has_pay_scores);
-                let cards = jobs_to_cards(&top);
-                let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                let candidate_ids: Vec<i64> = top.iter().filter_map(|j| j.id).collect();
-                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                let latency = started.elapsed().as_millis() as i64;
-                // Ranking ran, but if none of the rows had extractable pay the
-                // order is effectively recency, not salary. Flag it so the UI
-                // can show a "partial data" badge and the eval can track the
-                // degraded-answer rate.
-                let degraded_pay = !has_pay_scores;
-                let error_code: Option<&str> = if degraded_pay { Some("INSUFFICIENT_DATA") } else { None };
-                let chat_error = if degraded_pay {
-                    Some(AiChatError {
-                        code: "INSUFFICIENT_DATA".to_string(),
-                        message: "Ranking by pay not possible — none of the returned jobs had a parseable salary. Ordered by recency instead.".to_string(),
-                    })
-                } else {
-                    None
-                };
-                let _ = state.db.log_ai_run(&AiRunLog {
-                    task_type: "chat",
-                    latency_ms: latency,
-                    status: if degraded_pay { "partial_local" } else { "success_local" },
-                    created_at: &now,
-                    intent: Some(intent_str),
-                    route: Some(if degraded_pay { "local_ranking_no_pay" } else { "local_ranking" }),
-                    candidate_job_ids: Some(&candidate_ids),
-                    final_job_ids: Some(&linked_ids),
-                    retrieval_ms: Some(retrieval_ms),
-                    ..Default::default()
-                });
-                state.db.append_ai_message(
-                    convo_id, "assistant", &reply,
-                    &assistant_meta_full("local", None, Some(&cards), error_code),
-                    &linked_ids, &now,
-                ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: chat_error });
-            }
-
-            // JSON-mode ranking: SQL/local found nothing usable. Hand the
-            // recency-scoped pool to Ollama and ask it to return a typed
-            // TopJobsResponse so we don't have to regex cards out of prose.
-            let runs = state.db.get_runs().map_err(|e| e.to_string())?;
-            let pool: Vec<Job> = scoped_jobs_for_message(&message, &jobs, &runs)
-                .into_iter()
-                .take(25)
-                .collect();
-            if !pool.is_empty() {
-                let candidate_ids: Vec<i64> = pool.iter().filter_map(|j| j.id).collect();
-                let system = build_ollama_system_prompt(&pool) + &json_mode_system_suffix(&candidate_ids);
-                let json_msgs = vec![
-                    ChatMessage { role: "system".to_string(), content: system },
-                    ChatMessage { role: "user".to_string(), content: message.clone() },
-                ];
-                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                let llm_start = std::time::Instant::now();
-                let json_reply: Result<TopJobsResponse, String> = state
-                    .ollama
-                    .chat_json(&cfg, json_msgs, top_jobs_response_schema())
-                    .await;
-                let llm_ms = llm_start.elapsed().as_millis() as i64;
-                if let Ok(parsed) = json_reply {
-                    let allowed: std::collections::HashSet<i64> = candidate_ids.iter().copied().collect();
-                    let valid_ids: Vec<i64> = parsed
-                        .jobs
-                        .iter()
-                        .map(|j| j.job_id)
-                        .filter(|id| allowed.contains(id))
-                        .take(n)
-                        .collect();
-                    if !valid_ids.is_empty() {
-                        let ranked_jobs = state.db.get_jobs_by_ids(&valid_ids).map_err(|e| e.to_string())?;
-                        let include_desc = wants_descriptions(&message);
-                        let reply = format_ranking_reply(&ranked_jobs, include_desc, false);
-                        let cards = jobs_to_cards(&ranked_jobs);
-                        let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                        let latency = started.elapsed().as_millis() as i64;
-                        let _ = state.db.log_ai_run(&AiRunLog {
-                            task_type: "chat",
-                            latency_ms: latency,
-                            status: "success_ollama",
-                            created_at: &now,
-                            intent: Some(intent_str),
-                            route: Some("ollama_ranking_json"),
-                            candidate_job_ids: Some(&candidate_ids),
-                            final_job_ids: Some(&linked_ids),
-                            retrieval_ms: Some(retrieval_ms),
-                            llm_ms: Some(llm_ms),
-                            ..Default::default()
-                        });
-                        state.db.append_ai_message(
-                            convo_id, "assistant", &reply,
-                            &assistant_meta("ollama", None, Some(&cards)),
-                            &linked_ids, &now,
-                        ).map_err(|e| e.to_string())?;
-                        return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
-                    }
-                }
-                // JSON parse failed or returned no valid IDs — fall through.
+            if let Some(response) = handle_ranking_intent(
+                state.db.as_ref(),
+                &state.ollama,
+                &cfg,
+                convo_id,
+                &now,
+                started,
+                retrieval_start,
+                intent_str,
+                &message,
+                &jobs,
+                keyword.as_deref(),
+                n,
+                title_terms,
+            )
+            .await?
+            {
+                return Ok(response);
             }
         }
 
