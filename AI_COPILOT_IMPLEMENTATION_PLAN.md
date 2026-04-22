@@ -1,5 +1,7 @@
 # AI Copilot Implementation Plan (Ollama + Sentence Transformers)
 
+> Historical design note. The active execution tracker is `docs/CODEBASE_EXECUTION_PLAN.md`.
+
 ## 1) Codebase Scan Summary (Current State)
 
 This plan is based on the current codebase structure and active app architecture.

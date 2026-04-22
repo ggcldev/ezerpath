@@ -1,5 +1,7 @@
 # Ezerpath — v2 Architecture Upgrade Roadmap
 
+> Historical roadmap. The active execution tracker is `docs/CODEBASE_EXECUTION_PLAN.md`.
+
 Living checklist for the upgrades agreed on after the GPT-5 architecture review. Each item lists **scope**, **dependencies**, **files touched**, **plan**, and **acceptance criteria** so we can pause mid-flight and resume without re-deriving context.
 
 **Order matters.** Each step produces data or scaffolding the next one needs. Don't reorder without checking the dependency notes — you'll end up doing #5 with no telemetry to feed it.

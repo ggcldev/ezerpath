@@ -572,7 +572,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P4.1 - Rewrite CI to match the real repository
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -601,7 +601,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P4.2 - Add regression coverage for orchestration boundaries
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -610,21 +610,28 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 **Exact tasks**
 
-- [ ] Add frontend integration tests for:
-  - watchlist persistence independent of date range
-  - Ezer conversation switching race guard
-  - safe URL opening behavior
-- [ ] Add backend tests for:
-  - early URL allowlist rejection
-  - embedding-model config enforcement
-  - non-blocking startup diagnostics contract where practical
-  - foreign key cascade cleanup
-- [ ] Extend the existing eval harness only after the runtime contract is stable.
+- [x] Add frontend integration tests for:
+  - [x] watchlist persistence independent of date range
+  - [x] Ezer conversation switching race guard
+  - [x] safe URL opening behavior
+- [x] Add backend tests for:
+  - [x] early URL allowlist rejection
+  - [x] embedding-model config enforcement
+  - [x] non-blocking startup diagnostics contract where practical
+  - [x] foreign key cascade cleanup
+- [x] Extend the existing eval harness only after the runtime contract is stable.
+
+Current progress:
+
+- Added stricter frontend helper-level regression tests for Ezer conversation race handling and safe URL opening while deferring full component-test harness work.
+- Added a backend regression test for the native runtime diagnostics contract.
+- Added component-level frontend tests for App watchlist loading and Ezer conversation/card behavior.
+- Added Vite/Vitest browser-resolution config so Solid component tests run against the client bundle under jsdom.
 
 **Acceptance criteria**
 
-- [ ] High-risk flows found in this review have regression coverage.
-- [ ] New architectural boundaries have tests, not just comments.
+- [x] High-risk flows found in this review have regression coverage.
+- [x] New architectural boundaries have tests, not just comments.
 
 **Suggested commit**
 
@@ -632,29 +639,36 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P4.3 - Repair docs and remove stale guidance
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
 - `README.md`
 - `app/README.md`
-- `config/keywords.yaml`
 - `TODO.md`
 
 **Exact tasks**
 
-- [ ] Update the root README architecture section to describe the chosen runtime architecture.
+- [x] Update the root README architecture section to describe the chosen runtime architecture.
 - [x] Remove references to missing files such as `app/src/types/ipc-contract.ts`.
-- [ ] Replace the stock `app/README.md` with project-specific guidance or delete it if redundant.
-- [ ] Decide whether `config/keywords.yaml` is real configuration:
+- [x] Replace the stock `app/README.md` with project-specific guidance or delete it if redundant.
+- [x] Decide whether `config/keywords.yaml` is real configuration:
   - wire it into bootstrapping, or
   - remove its mention and possibly the file itself
-- [ ] Reduce duplicate planning docs if they are superseded by this file and active TODOs.
+- [x] Reduce duplicate planning docs if they are superseded by this file and active TODOs.
+
+Current progress:
+
+- Rewrote the root README to describe the native runtime, command/service split, scan progress channels, and current local verification commands.
+- Replaced the stock `app/README.md` template with project-specific workspace guidance.
+- Marked legacy roadmap docs as historical so contributors can find the live execution tracker first.
+- Removed the unused `config/keywords.yaml` file so the SQLite `keywords` table is the only runtime source of truth.
+- Established `docs/CODEBASE_EXECUTION_PLAN.md` as the live execution tracker, with the older roadmap/design docs retained only as archival context.
 
 **Acceptance criteria**
 
-- [ ] A new contributor can follow the docs without running into stale architecture claims.
-- [ ] There is one clear source of truth for active execution tracking.
+- [x] A new contributor can follow the docs without running into stale architecture claims.
+- [x] There is one clear source of truth for active execution tracking.
 
 **Suggested commit**
 
