@@ -20,11 +20,12 @@ use crawler::{
 use db::{AiRunLog, Database, Job, ScanRun};
 use services::ai_chat_service::{
     assistant_meta, assistant_meta_full, begin_chat_turn, build_ollama_system_prompt,
-    classify_intent, compact_reply_text, extract_cards_from_reply, format_followup_describe_reply,
+    classify_intent, compact_reply_text, format_followup_describe_reply,
     format_followup_select_reply, get_linked_job_ids, handle_describe_intent,
-    handle_ranking_intent, handle_search_keyword_intent, intent_name, is_app_scope_query,
-    is_prompt_injection_attempt, jobs_to_cards, out_of_scope_reply, persist_blocked_chat_reply,
-    response_violates_app_scope, ChatIntent, FollowUpResolution,
+    handle_general_chat_fallback, handle_ranking_intent, handle_search_keyword_intent,
+    intent_name, is_app_scope_query, is_prompt_injection_attempt, jobs_to_cards,
+    out_of_scope_reply, persist_blocked_chat_reply, response_violates_app_scope, ChatIntent,
+    FollowUpResolution,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -775,133 +776,19 @@ async fn ai_chat(
         ChatIntent::General => {}
     }
 
-    // ── Ollama Fallback (General path) ─────────────────────────────────────
-    let system = build_ollama_system_prompt(&jobs);
-    let mut ollama_messages: Vec<ChatMessage> = vec![ChatMessage {
-        role: "system".to_string(),
-        content: system,
-    }];
-    for msg in &recent {
-        if msg.role == "user" || msg.role == "assistant" || msg.role == "system" {
-            ollama_messages.push(ChatMessage {
-                role: msg.role.clone(),
-                content: msg.content.clone(),
-            });
-        }
-    }
-
-    let candidate_ids: Vec<i64> = jobs.iter().filter_map(|j| j.id).collect();
-    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-    let llm_start = std::time::Instant::now();
-    let ollama_reply = state.ollama.chat(&cfg, ollama_messages).await;
-    let llm_ms = llm_start.elapsed().as_millis() as i64;
-    let mut reply = match ollama_reply {
-        Ok(text) => text,
-        Err(err) => {
-            let latency = started.elapsed().as_millis() as i64;
-            let _ = state.db.log_ai_run(&AiRunLog {
-                task_type: "chat",
-                latency_ms: latency,
-                status: "failed",
-                error: Some(&err),
-                created_at: &now,
-                intent: Some(intent_str),
-                route: Some("ollama_streaming"),
-                candidate_job_ids: Some(&candidate_ids),
-                retrieval_ms: Some(retrieval_ms),
-                llm_ms: Some(llm_ms),
-                ..Default::default()
-            });
-            let err_lower = err.to_lowercase();
-            let fallback = if err_lower.contains("timed out") || err_lower.contains("error sending request") {
-                format!(
-                    "Ollama request timed out before completion.\n\
-The server is likely reachable, but the response took longer than your timeout.\n\n\
-Current timeout: {}ms\n\n\
-Quick checks:\n\
-1. In Settings > AI Runtime, increase Timeout (ms) to 60000-120000\n\
-2. Reduce Max Tokens to 256-512 for faster responses\n\
-3. Keep Ollama URL as `{}`\n\
-4. Retry your prompt\n\n\
-Technical detail: {}",
-                    cfg.timeout_ms,
-                    cfg.ollama_base_url,
-                    err
-                )
-            } else if err_lower.contains("http 404") || err_lower.contains("model") {
-                format!(
-                    "Ollama is reachable but the selected model appears unavailable.\n\n\
-Selected model: {}\n\n\
-Quick checks:\n\
-1. Run `ollama list`\n\
-2. Pull/select an installed model\n\
-3. Retry your prompt\n\n\
-Technical detail: {}",
-                    cfg.ollama_model,
-                    err
-                )
-            } else {
-                format!(
-                    "I can’t complete the Ollama request right now.\n\
-Please verify local Ollama and retry.\n\n\
-Quick checks:\n\
-1. Run `ollama serve`\n\
-2. Keep Ollama URL as `{}`\n\
-3. Ensure your selected model is installed (`ollama list`)\n\
-4. Retry your prompt\n\n\
-Technical detail: {}",
-                    cfg.ollama_base_url,
-                    err
-                )
-            };
-            state.db.append_ai_message(
-                convo_id, "assistant", &fallback,
-                &assistant_meta_full("local", Some("ollama_unreachable"), None, Some("MODEL_ERROR")),
-                &[], &now,
-            ).map_err(|e| e.to_string())?;
-            return Ok(AiChatResponse {
-                conversation_id: convo_id,
-                reply: fallback,
-                cards: None,
-                error: Some(AiChatError {
-                    code: "MODEL_ERROR".to_string(),
-                    message: err,
-                }),
-            });
-        }
-    };
-    if response_violates_app_scope(&reply) {
-        reply = out_of_scope_reply();
-    }
-    reply = compact_reply_text(&reply);
-    let ollama_cards = extract_cards_from_reply(&reply, &jobs);
-    let linked_ids: Vec<i64> = ollama_cards.iter().map(|c| c.job_id).collect();
-    let latency = started.elapsed().as_millis() as i64;
-    let _ = state.db.log_ai_run(&AiRunLog {
-        task_type: "chat",
-        latency_ms: latency,
-        status: "success_ollama",
-        created_at: &now,
-        intent: Some(intent_str),
-        route: Some("ollama_streaming"),
-        candidate_job_ids: Some(&candidate_ids),
-        final_job_ids: Some(&linked_ids),
-        retrieval_ms: Some(retrieval_ms),
-        llm_ms: Some(llm_ms),
-        ..Default::default()
-    });
-    state.db.append_ai_message(
-        convo_id, "assistant", &reply,
-        &assistant_meta("ollama", None, if ollama_cards.is_empty() { None } else { Some(&ollama_cards) }),
-        &linked_ids, &now,
-    ).map_err(|e| e.to_string())?;
-
-    Ok(AiChatResponse {
-        conversation_id: convo_id,
-        reply,
-        cards: if ollama_cards.is_empty() { None } else { Some(ollama_cards) },
-        error: None,
-    })
+    handle_general_chat_fallback(
+        state.db.as_ref(),
+        &state.ollama,
+        &cfg,
+        convo_id,
+        &now,
+        started,
+        retrieval_start,
+        intent_str,
+        &jobs,
+        &recent,
+    )
+    .await
 }
 
 #[tauri::command]
