@@ -1,8 +1,8 @@
 use crate::ai::prompts::system_prompt_for_job_chat;
 use crate::ai::ranking::rank_embeddings_against_query;
 use crate::ai::sentence_service::SentenceServiceClient;
-use crate::ai::{AiJobCard, AiMessage, AiRuntimeConfig};
-use crate::db::{parse_pay, Database, Job, ScanRun};
+use crate::ai::{AiChatResponse, AiJobCard, AiMessage, AiRuntimeConfig};
+use crate::db::{parse_pay, AiRunLog, Database, Job, ScanRun};
 use serde::Deserialize;
 use std::cmp::Ordering;
 
@@ -133,6 +133,45 @@ pub(crate) fn begin_chat_turn(
         now,
         history,
         recent,
+    })
+}
+
+pub(crate) fn persist_blocked_chat_reply(
+    db: &Database,
+    conversation_id: i64,
+    now: &str,
+    started: std::time::Instant,
+    reply: String,
+    status: &'static str,
+    error: &'static str,
+    route: &'static str,
+    meta_scope: Option<&str>,
+) -> Result<AiChatResponse, String> {
+    let latency = started.elapsed().as_millis() as i64;
+    let _ = db.log_ai_run(&AiRunLog {
+        task_type: "chat",
+        latency_ms: latency,
+        status,
+        error: Some(error),
+        created_at: now,
+        route: Some(route),
+        ..Default::default()
+    });
+    db.append_ai_message(
+        conversation_id,
+        "assistant",
+        &reply,
+        &assistant_meta("local", meta_scope, None),
+        &[],
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(AiChatResponse {
+        conversation_id,
+        reply,
+        cards: None,
+        error: None,
     })
 }
 

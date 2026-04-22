@@ -27,9 +27,9 @@ use services::ai_chat_service::{
     format_describe_reply, format_followup_describe_reply, format_followup_select_reply,
     format_ranking_reply, format_search_keyword_reply, get_linked_job_ids, intent_name,
     is_app_scope_query, is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards,
-    out_of_scope_reply, response_violates_app_scope, scoped_jobs_for_message,
-    semantic_search_fallback, short_description, wants_descriptions, ChatIntent,
-    FollowUpResolution, JobDescriptionItem, JobDescriptionsResponse, TopJobsResponse,
+    out_of_scope_reply, persist_blocked_chat_reply, response_violates_app_scope,
+    scoped_jobs_for_message, semantic_search_fallback, short_description, wants_descriptions,
+    ChatIntent, FollowUpResolution, JobDescriptionItem, JobDescriptionsResponse, TopJobsResponse,
     SEARCH_KEYWORD_FTS_MIN_HITS,
 };
 use std::sync::Arc;
@@ -471,60 +471,32 @@ async fn ai_chat(
 
     if is_prompt_injection_attempt(&message) {
         let reply = "I can’t follow that request. I only operate within this app’s scope and policy.".to_string();
-        let latency = started.elapsed().as_millis() as i64;
-        let _ = state.db.log_ai_run(&AiRunLog {
-            task_type: "chat",
-            latency_ms: latency,
-            status: "blocked_injection",
-            error: Some("prompt_injection_detected"),
-            created_at: &now,
-            route: Some("blocked_injection"),
-            ..Default::default()
-        });
-        state
-            .db
-            .append_ai_message(
-                convo_id,
-                "assistant",
-                &reply,
-                &assistant_meta("local", Some("blocked_injection"), None),
-                &[],
-                &now,
-            )
-            .map_err(|e| e.to_string())?;
-        return Ok(AiChatResponse {
-            conversation_id: convo_id,
+        return persist_blocked_chat_reply(
+            state.db.as_ref(),
+            convo_id,
+            &now,
+            started,
             reply,
-            cards: None, error: None });
+            "blocked_injection",
+            "prompt_injection_detected",
+            "blocked_injection",
+            Some("blocked_injection"),
+        );
     }
 
     if !is_app_scope_query(&message, &history) {
         let reply = out_of_scope_reply();
-        let latency = started.elapsed().as_millis() as i64;
-        let _ = state.db.log_ai_run(&AiRunLog {
-            task_type: "chat",
-            latency_ms: latency,
-            status: "blocked_scope",
-            error: Some("out_of_scope_query"),
-            created_at: &now,
-            route: Some("blocked_scope"),
-            ..Default::default()
-        });
-        state
-            .db
-            .append_ai_message(
-                convo_id,
-                "assistant",
-                &reply,
-                &assistant_meta("local", Some("blocked"), None),
-                &[],
-                &now,
-            )
-            .map_err(|e| e.to_string())?;
-        return Ok(AiChatResponse {
-            conversation_id: convo_id,
+        return persist_blocked_chat_reply(
+            state.db.as_ref(),
+            convo_id,
+            &now,
+            started,
             reply,
-            cards: None, error: None });
+            "blocked_scope",
+            "out_of_scope_query",
+            "blocked_scope",
+            Some("blocked"),
+        );
     }
 
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
