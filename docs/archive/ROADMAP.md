@@ -1,4 +1,9 @@
-# Ezerpath — Product Overview & Roadmap
+# Ezerpath — Historical Planning (Archived 2026-04-22)
+
+> **Archived.** Superseded by `README.md` and `AI_COPILOT_IMPLEMENTATION_PLAN.md`.
+> This document references Claude API (actual implementation uses local Ollama)
+> and mobile targets (iOS/Android) that are not on the current roadmap. Kept
+> for historical context; do not treat as current truth.
 
 ## Vision
 
