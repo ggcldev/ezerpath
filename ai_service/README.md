@@ -1,5 +1,7 @@
 # AI + Scrapling Service
 
+Legacy fallback only. As of 2026-04-22, Ezerpath's production runtime is the native Rust/Tauri path for embeddings, resume parsing, and crawler fallback behavior. This Python service remains temporarily for comparison/debugging while Phase 3 retires the sidecar code.
+
 Local service used by the Tauri app for:
 - Sentence-transformers embeddings (`/embed`)
 - Resume file text extraction (`/extract-text`)

@@ -236,7 +236,7 @@ impl Crawler {
     }
 
     fn scrapling_base_url() -> Option<String> {
-        // Scrapling is always-on: defaults to the same host/port as the bundled
+        // Legacy sidecar fallback: defaults to the same host/port as the old
         // ai_service (127.0.0.1:8765). Override with EZER_SCRAPLING_BASE_URL.
         // If the service isn't running, HTTP calls will simply fail and the
         // crawler falls back to its built-in parsers — no config needed.
@@ -349,8 +349,8 @@ impl Crawler {
         let parsed_url = parse_allowed_job_url(url)?;
         let html = self.fetch_with_retry(url).await?;
         if is_bruntwork_job_url(&parsed_url) {
-            // Bruntwork uses Next.js App Router (RSC streaming); a plain HTTP fetch
-            // does not contain rendered content. Try scrapling (headless browser) first.
+            // Legacy fallback while Phase 3 retires the sidecar. The supported
+            // path is WebView first at the Tauri command layer, then static/RSC parsing.
             if let Some(scrapled) = self.try_scrapling_details_fallback(url, None).await {
                 // Reject if scrapling returned RSC streaming garbage instead of real content
                 let has_garbage = is_rsc_garbage(&scrapled.description)
@@ -400,8 +400,8 @@ impl Crawler {
         Ok(parsed)
     }
 
-    /// Scrapling fallback for Bruntwork: asks the scrapling service to render
-    /// the Bruntwork search page with a headless browser and return job data.
+    /// Legacy scrapling fallback for Bruntwork: asks the sidecar to render the
+    /// Bruntwork search page with a headless browser and return job data.
     async fn try_scrapling_bruntwork_fallback(&self) -> Option<Vec<Job>> {
         let base = Self::scrapling_base_url()?;
         let endpoint = format!("{base}/extract-search");

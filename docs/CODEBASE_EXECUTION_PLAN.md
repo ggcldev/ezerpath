@@ -301,7 +301,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 ### P2.1 - Inventory what the Python sidecar still does
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Primary files**
 
@@ -311,47 +311,57 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 - `app/src-tauri/src/ai_service_manager.rs`
 - `README.md`
 
+**Inventory**
+
+| Responsibility | Current sidecar endpoint/code | Native replacement state | Decision |
+|---|---|---|---|
+| Embedding fallback | `POST /embed` in `ai_service/server.py`; HTTP fallback in `app/src-tauri/src/ai/sentence_service.rs` | Already replaced natively by `fastembed`/ONNX via `native_embedder`; Phase 1 also locked the model namespace to `all-MiniLM-L6-v2` end to end. | Retire HTTP fallback after adding one final native-embedding regression around error surfacing. |
+| Resume text extraction fallback | `POST /extract-text` in `ai_service/server.py`; HTTP fallback in `sentence_service.rs` | Already replaced natively by `native_resume_parser` for `.pdf`, `.docx`, and `.txt`; Phase 1 narrowed the import boundary to exactly those extensions and copies files into app data before parsing. | Retire HTTP fallback. The sidecar supports extra extensions like `.md`/`.rtf`, but those are outside the accepted backend contract. |
+| Scrapling search fallback | `POST /extract-search`; `Crawler::try_scrapling_search_fallback` and `try_scrapling_bruntwork_fallback` | Partially replaced but sufficient for production: OnlineJobs uses native static parsing; Bruntwork search has `try_parse_bruntwork_next_data` plus `parse_bruntwork_search_html`, both covered by parser tests. Current Bruntwork search pages expose listing content to non-headless crawlers/search indexing as of 2026-04-22. | Retire scrapling as a production dependency; keep native parser tests and add fixture coverage if a live Bruntwork regression appears. |
+| Scrapling details fallback | `POST /extract-details`; `Crawler::try_scrapling_details_fallback` | Partially replaced by the Tauri WebView scraper in `fetch_job_details`, static `parse_bruntwork_job_details`, and `fetch_rsc_payload` + `try_parse_rsc_payload_description`. Current Bruntwork detail pages expose readable descriptions and published dates to non-headless crawlers/search indexing as of 2026-04-22. | Retire scrapling as a production dependency; the WebView/RSC/static chain is the supported fallback stack. |
+| Health endpoint for diagnostics | `GET /health`; `ai_service_manager::snapshot` probes `http://127.0.0.1:8765/health` | Still sidecar-specific. It only diagnoses an optional fallback process and should not remain a primary settings concept once the sidecar is retired. | Replace with native runtime diagnostics for Ollama/native embedder/cache paths, then delete sidecar startup diagnostics. |
+
 **Exact tasks**
 
-- [ ] Document every current sidecar responsibility:
+- [x] Document every current sidecar responsibility:
   - embedding fallback
   - resume text extraction fallback
   - scrapling search/details fallback
   - health endpoint used by diagnostics
-- [ ] Mark each one as:
+- [x] Mark each one as:
   - already replaced natively
   - partially replaced
   - still required
-- [ ] Verify whether Bruntwork scraping still needs scrapling after the current webview + RSC parsing path.
+- [x] Verify whether Bruntwork scraping still needs scrapling after the current webview + RSC parsing path.
 
 **Acceptance criteria**
 
-- [ ] There is a one-page inventory of remaining sidecar responsibilities inside this plan or an attached decision note.
+- [x] There is a one-page inventory of remaining sidecar responsibilities inside this plan or an attached decision note.
 
 ### P2.2 - Decision checkpoint: keep or retire
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 **Exact tasks**
 
-- [ ] Choose one path and record the rationale in this file under `Decision Log`.
+- [x] Choose one path and record the rationale in this file under `Decision Log`.
 
 **If KEEP SIDECAR**
 
-- [ ] Define supported platforms.
-- [ ] Define packaging method for the sidecar and Python runtime.
-- [ ] Remove `.venv/bin/uvicorn` assumptions from startup logic.
-- [ ] Add CI coverage that exercises the packaged or supported startup flow.
+- [x] Define supported platforms. `DROPPED`: sidecar will not be a supported production runtime.
+- [x] Define packaging method for the sidecar and Python runtime. `DROPPED`: no packaging path will be added.
+- [x] Remove `.venv/bin/uvicorn` assumptions from startup logic. `DROPPED`: delete startup logic during retirement instead.
+- [x] Add CI coverage that exercises the packaged or supported startup flow. `DROPPED`: CI should cover native runtime paths instead.
 
 **If RETIRE SIDECAR**
 
-- [ ] Prove Bruntwork search/details parity without scrapling.
+- [x] Prove Bruntwork search/details parity without scrapling.
 - [ ] Delete HTTP embedding and text-extraction fallback code.
 - [ ] Delete sidecar startup manager and sidecar docs once fallback parity is complete.
 
 **Acceptance criteria**
 
-- [ ] There is no ambiguity left in code comments, docs, or CI about whether `ai_service` is a required production dependency.
+- [x] There is no ambiguity left in code comments, docs, or CI about whether `ai_service` is a required production dependency.
 
 **Suggested commit**
 
@@ -377,6 +387,10 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 **Primary files**
 
 - `app/src-tauri/src/lib.rs`
+- `app/src-tauri/src/ai/sentence_service.rs`
+- `app/src-tauri/src/crawler/mod.rs`
+- `app/src-tauri/src/ai_service_manager.rs`
+- `ai_service/`
 - new modules under `app/src-tauri/src/commands/`
 - new modules under `app/src-tauri/src/services/`
 
@@ -391,6 +405,11 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
   - `services/scan_service.rs`
   - `services/ai_chat_service.rs`
   - `services/runtime_service.rs`
+- [ ] Retire sidecar-specific runtime code before extracting the runtime service:
+  - remove HTTP `/embed` and `/extract-text` fallbacks from `sentence_service.rs`
+  - remove scrapling HTTP fallbacks from `crawler/mod.rs`
+  - delete `ai_service_manager.rs` and the `_ai_service` app state handle
+  - delete or archive `ai_service/` after README/CI no longer reference it as active runtime
 - [ ] Move business logic out of `lib.rs`; keep `lib.rs` focused on:
   - module wiring
   - `AppState`
@@ -403,9 +422,11 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 - [ ] `lib.rs` becomes a thin composition root.
 - [ ] AI chat routing, scan orchestration, and runtime startup each live in dedicated modules.
+- [ ] No production code starts or probes the Python sidecar.
 
 **Suggested commit sequence**
 
+- `refactor(runtime): retire python sidecar fallbacks`
 - `refactor(backend): extract scan service from lib.rs`
 - `refactor(backend): extract ai chat service from lib.rs`
 - `refactor(backend): extract runtime startup service from lib.rs`
@@ -509,7 +530,6 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 - `app/src-tauri/src/ai/mod.rs`
 - `app/src-tauri/src/crawler/mod.rs`
-- `app/src-tauri/src/ai_service_manager.rs`
 - `app/src/App.tsx`
 - `app/src/components/SettingsPanel.tsx`
 - new `app/src/types/ipc.ts` or generated contract output
@@ -518,10 +538,11 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 
 - [ ] Define one runtime-config source of truth for:
   - Ollama base URL
-  - sidecar/scrapling URL if still applicable
+  - native embedding cache/model defaults
   - timeout defaults
   - embedding model contract
-- [ ] Stop mixing DB-backed config, env vars, and hardcoded localhost assumptions without a defined precedence.
+- [ ] Remove sidecar/scrapling URL settings from active runtime config after retirement.
+- [ ] Stop mixing DB-backed config and hardcoded localhost assumptions without a defined precedence.
 - [ ] Create a real shared TS contract module for commonly reused shapes.
 - [ ] Move duplicated interfaces out of `App.tsx`, `SettingsPanel.tsx`, `JobsView.tsx`, `WatchlistView.tsx`, and `EzerView.tsx`.
 - [ ] If generation is feasible, document and adopt it; otherwise centralize the handwritten contract first.
@@ -659,16 +680,17 @@ Use this as the default slicing unless implementation details force a regroup:
 6. `fix(ui): load watchlist from dedicated persisted data source`
 7. `fix(ui): unify safe URL opening and guard Ezer conversation races`
 8. `docs(architecture): record sidecar keep-or-retire decision`
-9. `refactor(backend): extract scan service from lib.rs`
-10. `refactor(backend): extract ai chat service from lib.rs`
-11. `refactor(backend): extract runtime startup service from lib.rs`
-12. `refactor(frontend): replace global version bump invalidation with feature-scoped refresh`
-13. `refactor(data): move core job filtering paths into SQLite queries`
-14. `refactor(pay): centralize pay normalization in backend contract`
-15. `refactor(contract): centralize runtime config and shared IPC types`
-16. `ci: align workflow with actual app and sidecar architecture`
-17. `test: add regression coverage for startup, watchlist, Ezer, and URL safety`
-18. `docs: align repository guidance with current architecture`
+9. `refactor(runtime): retire python sidecar fallbacks`
+10. `refactor(backend): extract scan service from lib.rs`
+11. `refactor(backend): extract ai chat service from lib.rs`
+12. `refactor(backend): extract runtime startup service from lib.rs`
+13. `refactor(frontend): replace global version bump invalidation with feature-scoped refresh`
+14. `refactor(data): move core job filtering paths into SQLite queries`
+15. `refactor(pay): centralize pay normalization in backend contract`
+16. `refactor(contract): centralize runtime config and shared IPC types`
+17. `ci: align workflow with actual app and sidecar architecture`
+18. `test: add regression coverage for startup, watchlist, Ezer, and URL safety`
+19. `docs: align repository guidance with current architecture`
 
 ---
 
@@ -685,6 +707,11 @@ Use this as the default slicing unless implementation details force a regroup:
 - Working assumption for planning:
   - native Rust remains the preferred path for embeddings and resume parsing
   - Python sidecar remains undecided until Bruntwork fallback needs are verified
+- Architecture decision: `RETIRE SIDECAR`.
+  - Production support expectation: the app supports the native Rust/Tauri runtime, SQLite, Ollama, native `fastembed` embeddings, native resume parsing, and Rust/WebView/RSC crawler paths. Python, FastAPI, scrapling, Playwright, and `.venv/bin/uvicorn` are no longer production runtime requirements.
+  - CI impact: CI should validate `npm test`, `cargo test`, frontend build/type checks, and native parser/crawler coverage. It should not install Python sidecar dependencies unless a legacy/archival sidecar test job is explicitly added outside the production gate.
+  - Rationale: the sidecar responsibilities are either already replaced natively or are fallback-only. Keeping the sidecar would require cross-platform Python packaging, browser binary management, and CI startup coverage for a path the product no longer needs as a first-class dependency.
+  - Next action: begin Phase 3 with `refactor(runtime): retire python sidecar fallbacks` before splitting services, so the refactor does not preserve obsolete runtime boundaries.
 
 ---
 

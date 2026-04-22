@@ -17,10 +17,14 @@ A local-first desktop job-hunting copilot. Crawls job boards, stores everything 
 | Storage | SQLite via `rusqlite` (bundled, no system dep) |
 | Crawler | In-process Rust crawler using `scraper` + `reqwest` |
 | LLM runtime | [Ollama](https://ollama.com) — default model `qwen2.5:7b-instruct` |
-| Embeddings + file extraction | Python FastAPI sidecar (`sentence-transformers`, `pypdf`, `python-docx`) |
+| Embeddings + file extraction | Native Rust paths (`fastembed`/ONNX, `pdf-extract`, `zip`, `quick-xml`) |
 | Tests | `vitest` (frontend), `cargo test` + `tempfile` (backend) |
 
 ---
+
+## Architecture decision
+
+As of 2026-04-22, the Python `ai_service/` sidecar is a legacy development fallback scheduled for retirement, not a production runtime dependency. The supported production path is native Rust/Tauri for embeddings, resume parsing, crawling, SQLite, and Ollama chat. Bruntwork fallback support should use the Rust static/RSC parsers and the Tauri WebView path rather than scrapling/Playwright.
 
 ## Architecture
 
@@ -78,25 +82,18 @@ A local-first desktop job-hunting copilot. Crawls job boards, stores everything 
 │  │      ├─ prompts.rs       system prompts     resilience       migrations│  │
 │  │      ├─ ranking.rs       cosine_similarity  fallback                  │  │
 │  │      └─ sentence_                                                     │  │
-│  │         service.rs       HTTP client → ai_service                     │  │
+│  │         service.rs       native embed + resume parsing                │  │
 │  └─────────┬────────────────┬─────────────────┬─────────────────────────────┘
 └────────────┼────────────────┼─────────────────┼─────────────────────────────┘
              │                │                 │
              ▼                ▼                 ▼
    ┌──────────────────┐  ┌──────────┐  ┌──────────────────────────┐
-   │ Ollama           │  │ Job      │  │ ai_service  (FastAPI)    │
-   │ 127.0.0.1:11434  │  │ boards   │  │ 127.0.0.1:8765           │
-   │  POST /api/chat  │  │ HTTPS    │  │  POST /embed             │
-   │   (stream=true)  │  │          │  │  POST /extract-text      │
-   │  GET  /api/tags  │  │          │  │  GET  /health            │
-   └──────────────────┘  └──────────┘  └─────────────┬────────────┘
-                                                     │
-                                                     ▼
-                                        ┌──────────────────────────┐
-                                        │ sentence-transformers    │
-                                        │ all-MiniLM-L6-v2         │
-                                        │ + pypdf + python-docx    │
-                                        └──────────────────────────┘
+   │ Ollama           │  │ Job      │  │ Native AI utilities      │
+   │ 127.0.0.1:11434  │  │ boards   │  │ fastembed / ONNX         │
+   │  POST /api/chat  │  │ HTTPS    │  │ pdf-extract              │
+   │   (stream=true)  │  │          │  │ zip + quick-xml          │
+   │  GET  /api/tags  │  │          │  │ local cache directory    │
+   └──────────────────┘  └──────────┘  └──────────────────────────┘
 
    ┌────────────────────────────────────────────────────────────────────┐
    │ Local SQLite — ezerpath.db                                         │
@@ -117,7 +114,7 @@ A few honest notes about this picture:
 - **Two embedding tables, not one.** Jobs and resumes embed separately, both keyed by `(id, model_name)`, so you can swap embedding models without losing the others' cache.
 - **`ranking.rs` is tiny.** It's just `cosine_similarity`. The "SQL-first ranking" isn't a Rust ranking module — it's the `lib.rs` intent-router branch that asks SQLite to sort by normalized salary, bypassing Ollama entirely.
 - **No frontend query/cache layer.** `app/src/utils/` has small helpers (scope filters, a `runMutation` try/catch wrapper, motion easings) — not a TanStack-style cache. Views call `invoke()` directly and re-fetch on demand.
-- **Nothing leaves localhost.** The only outbound traffic is the crawler hitting job boards. Ollama, the embedding sidecar, and SQLite are all on `127.0.0.1`.
+- **Nothing leaves localhost.** The only outbound traffic is the crawler hitting job boards. Ollama and SQLite stay local; embeddings and resume parsing run in-process.
 
 ### Repository layout
 
@@ -142,7 +139,7 @@ ezerpath/
 │   │   ├── Cargo.toml
 │   │   └── tauri.conf.json
 │   └── package.json
-├── ai_service/                # Python FastAPI sidecar
+├── ai_service/                # Legacy Python sidecar fallback, pending retirement
 │   ├── server.py              # /embed, /extract-text, /health
 │   └── requirements.txt
 ├── config/keywords.yaml       # Crawler keyword config
@@ -164,9 +161,9 @@ ezerpath/
   - **Streaming chat** — NDJSON streaming with idle-gap timeout, so cold model loads and long completions never hit a wall-clock limit.
   - **Job cards** — assistant replies attach inline cards for the jobs they reference.
   - **Linked job IDs** — follow-up questions ("describe the second one") resolve against the previously cited jobs.
-- **Resume matching** — upload a PDF/DOCX/TXT resume, the Python sidecar extracts text and produces embeddings, and Rust ranks jobs by cosine similarity.
+- **Resume matching** — upload a PDF/DOCX/TXT resume, native Rust extracts text and produces embeddings, and Rust ranks jobs by cosine similarity.
 - **Keyword suggestions** — Ollama-generated keyword ideas for your next scan.
-- **Settings panel** — live edit Ollama URL, model, temperature, max tokens, request timeout, and embedding service URL.
+- **Settings panel** — live edit Ollama URL, model, temperature, max tokens, request timeout, and runtime diagnostics.
 
 ---
 
@@ -178,7 +175,6 @@ ezerpath/
 |---|---|---|
 | Rust toolchain | stable (1.77+) | Tauri core |
 | Node.js | 18+ | Vite / Tauri CLI |
-| Python | 3.10+ | Embedding sidecar |
 | Ollama | latest | Local LLM runtime |
 | Xcode CLT (macOS) / `build-essential` + `libwebkit2gtk-4.1-dev` (Linux) / WebView2 (Windows) | — | Tauri's webview |
 
@@ -207,21 +203,7 @@ ollama serve
 
 Verify: `curl http://127.0.0.1:11434/api/tags`
 
-### 3. Set up the Python embedding sidecar
-
-```bash
-cd ai_service
-python3 -m venv .venv
-source .venv/bin/activate         # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn server:app --host 127.0.0.1 --port 8765
-```
-
-Leave it running. Verify: `curl http://127.0.0.1:8765/health`
-
-> The first call to `/embed` downloads the `all-MiniLM-L6-v2` model (~80 MB). This is a one-time cost.
-
-### 4. Install frontend deps
+### 3. Install frontend deps
 
 In a new terminal:
 
@@ -230,7 +212,7 @@ cd app
 npm install
 ```
 
-### 5. Run the desktop app
+### 4. Run the desktop app
 
 ```bash
 npx tauri dev
@@ -242,10 +224,11 @@ The app window will open at `1100×700`. Open **Settings** in the sidebar to con
 
 - Ollama URL: `http://127.0.0.1:11434`
 - Ollama model: `qwen2.5:7b-instruct` (or whatever you pulled)
-- Embedding service URL: `http://127.0.0.1:8765`
 - Timeout (ms): `120000` (default — bounds *idle gaps* between streamed tokens, not total generation time)
 
-### 6. Build a release binary
+The first native embedding call downloads the `all-MiniLM-L6-v2` ONNX assets into the app cache. This is a one-time cost.
+
+### 5. Build a release binary
 
 ```bash
 cd app
@@ -262,7 +245,7 @@ The signed bundle lands in `app/src-tauri/target/release/bundle/`.
 |---|---|---|
 | `ollama_base_url` | `http://127.0.0.1:11434` | Any Ollama-compatible endpoint works |
 | `ollama_model` | `qwen2.5:7b-instruct` | Use any model you've pulled |
-| `embedding_service_url` | `http://127.0.0.1:8765` | The Python sidecar |
+| `embedding_service_url` | `http://127.0.0.1:8765` | Legacy sidecar fallback setting, scheduled for removal |
 | `embedding_model` | `all-MiniLM-L6-v2` | Native embedding model, currently fixed to this value |
 | `temperature` | `0.2` | Low for deterministic ranking output |
 | `max_tokens` | `1024` | Per-reply generation cap |
@@ -356,7 +339,7 @@ cd app/src-tauri && cargo fmt
 | `app/` | `npx tauri dev` | Full dev loop (Vite + cargo run + window) |
 | `app/` | `npx tauri build` | Release bundle |
 | `app/` | `npm run dev` | Vite only (no Rust window) |
-| `ai_service/` | `uvicorn server:app --reload --port 8765` | Sidecar with reload |
+| `ai_service/` | `uvicorn server:app --reload --port 8765` | Legacy sidecar fallback only, pending removal |
 
 ---
 
@@ -365,8 +348,8 @@ cd app/src-tauri && cargo fmt
 **"Ollama request timed out before completion."**
 Make sure `ollama serve` is running and the selected model is pulled (`ollama list`). The default 120s idle-gap budget is generous, but if your hardware is very slow on first-token latency you can raise it in Settings.
 
-**"Embedding service unreachable."**
-Confirm `uvicorn` is running on port 8765 and that no firewall is blocking localhost. `curl http://127.0.0.1:8765/health` should return `{"ok": true, ...}`.
+**Native embedding download fails**
+The first embedding call downloads ONNX assets into the app cache. Check your network connection and retry indexing from Settings after the model cache finishes or recovers.
 
 **Port 1420 already in use** when running `npx tauri dev`
 A previous Vite process is still alive. `lsof -ti:1420 | xargs kill -9` and retry.

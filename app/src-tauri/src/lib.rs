@@ -2290,8 +2290,9 @@ pub fn run() {
                 .unwrap_or_else(|_| std::path::PathBuf::from("./embeddings_cache"));
             let sentence_service = SentenceServiceClient::new(30_000, embeddings_cache_dir)
                 .map_err(|e| std::io::Error::other(format!("failed to init sentence service client: {e}")))?;
-            // Spawn the bundled Python AI + scrapling service without waiting
-            // for readiness; diagnostics track background startup progress.
+            // Start the legacy Python sidecar fallback without waiting for
+            // readiness. Phase 3 removes this path after the sidecar retirement
+            // decision is applied in code.
             let log_dir = app
                 .path()
                 .app_log_dir()

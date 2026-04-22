@@ -1,9 +1,13 @@
-//! Auto-starts the bundled Python AI + scrapling service on app launch.
+//! Auto-starts the legacy Python AI + scrapling fallback service on app launch.
+//!
+//! This is not a production runtime requirement after the 2026-04-22
+//! `RETIRE SIDECAR` architecture decision. It remains temporarily so Phase 3
+//! can remove fallback callers and startup diagnostics in a controlled patch.
 //!
 //! Behaviour:
 //! - If a service is already responding at `127.0.0.1:8765/health`, do nothing.
 //! - Otherwise, locate `ai_service/.venv/bin/uvicorn` relative to the project
-//!   root (dev) or the executable dir (production) and spawn it as a child.
+//!   root (dev) or the executable dir and spawn it as a legacy fallback child.
 //! - The spawned process is killed automatically when the returned handle is
 //!   dropped (i.e. when the Tauri app shuts down).
 //!

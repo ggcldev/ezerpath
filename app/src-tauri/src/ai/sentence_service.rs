@@ -64,7 +64,8 @@ impl SentenceServiceClient {
             Err(e) => eprintln!("[embedder] native failed ({e}), falling back to HTTP"),
         }
 
-        // Fallback: HTTP service (dev path, kept for now until ai_service/ is deleted)
+        // Legacy sidecar fallback. Phase 3 removes this after the 2026-04-22
+        // RETIRE SIDECAR architecture decision.
         let url = format!("{}/embed", cfg.embedding_service_url.trim_end_matches('/'));
         let req = EmbedRequest {
             texts,
@@ -99,7 +100,7 @@ impl SentenceServiceClient {
         }
 
         // Native not initialized yet — report ready anyway (first use will trigger download),
-        // but also probe the HTTP fallback as a secondary signal.
+        // but also probe the legacy HTTP fallback as a secondary signal.
         let url = format!("{}/health", cfg.embedding_service_url.trim_end_matches('/'));
         let http_status = self.client.get(url).send().await.ok().map(|r| r.status().is_success());
 
@@ -137,7 +138,8 @@ impl SentenceServiceClient {
             Err(e) => eprintln!("[resume_parser] native failed ({e}), falling back to HTTP"),
         }
 
-        // Fallback: HTTP service (will go away once ai_service/ is deleted)
+        // Legacy sidecar fallback. Phase 3 removes this after the 2026-04-22
+        // RETIRE SIDECAR architecture decision.
         let url = format!(
             "{}/extract-text",
             cfg.embedding_service_url.trim_end_matches('/')
