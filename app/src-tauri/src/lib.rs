@@ -22,14 +22,15 @@ use crawler::{
 };
 use db::{AiRunLog, Database, Job, ScanRun};
 use services::ai_chat_service::{
-    assistant_meta, assistant_meta_full, build_ollama_system_prompt, chat_title_from_query,
+    assistant_meta, assistant_meta_full, begin_chat_turn, build_ollama_system_prompt,
     classify_intent, compact_reply_text, compare_jobs_for_ranking, extract_cards_from_reply,
     format_describe_reply, format_followup_describe_reply, format_followup_select_reply,
-    format_ranking_reply, format_search_keyword_reply, get_linked_job_ids, is_app_scope_query,
-    is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards, out_of_scope_reply,
-    response_violates_app_scope, scoped_jobs_for_message, semantic_search_fallback,
-    short_description, wants_descriptions, ChatIntent, FollowUpResolution, JobDescriptionItem,
-    JobDescriptionsResponse, TopJobsResponse, SEARCH_KEYWORD_FTS_MIN_HITS,
+    format_ranking_reply, format_search_keyword_reply, get_linked_job_ids, intent_name,
+    is_app_scope_query, is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards,
+    out_of_scope_reply, response_violates_app_scope, scoped_jobs_for_message,
+    semantic_search_fallback, short_description, wants_descriptions, ChatIntent,
+    FollowUpResolution, JobDescriptionItem, JobDescriptionsResponse, TopJobsResponse,
+    SEARCH_KEYWORD_FTS_MIN_HITS,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -462,29 +463,11 @@ async fn ai_chat(
     filters: Option<AiChatFilters>,
 ) -> Result<AiChatResponse, String> {
     let started = std::time::Instant::now();
-    let now = chrono::Utc::now().to_rfc3339();
-    let suggested_title = chat_title_from_query(&message);
-    let convo_id = match conversation_id {
-        Some(id) => id,
-        None => state
-            .db
-            .create_ai_conversation(Some(&suggested_title), &now)
-            .map_err(|e| e.to_string())?
-            .id,
-    };
-
-    // Backfill better titles for existing generic conversations.
-    state
-        .db
-        .maybe_set_ai_conversation_title(convo_id, &suggested_title)
-        .map_err(|e| e.to_string())?;
-
-    state
-        .db
-        .append_ai_message(convo_id, "user", &message, "{}", &[], &now)
-        .map_err(|e| e.to_string())?;
-
-    let history = state.db.get_ai_messages(convo_id).map_err(|e| e.to_string())?;
+    let turn = begin_chat_turn(state.db.as_ref(), conversation_id, &message, 8)?;
+    let convo_id = turn.conversation_id;
+    let now = turn.now;
+    let history = turn.history;
+    let recent = turn.recent;
 
     if is_prompt_injection_attempt(&message) {
         let reply = "I can’t follow that request. I only operate within this app’s scope and policy.".to_string();
@@ -545,12 +528,6 @@ async fn ai_chat(
     }
 
     let cfg = state.db.get_ai_runtime_config().map_err(|e| e.to_string())?;
-    let limit_history = 8usize;
-    let recent: Vec<AiMessage> = if history.len() > limit_history {
-        history[(history.len() - limit_history)..].to_vec()
-    } else {
-        history
-    };
 
     let keyword = filters.as_ref().and_then(|f| f.keyword.clone());
     let watchlisted_only = filters.as_ref().and_then(|f| f.watchlisted_only).unwrap_or(false);
@@ -563,13 +540,7 @@ async fn ai_chat(
 
     // ── Intent Router ──────────────────────────────────────────────────────
     let intent = classify_intent(&message, &recent);
-    let intent_str = match &intent {
-        ChatIntent::Ranking { .. } => "ranking",
-        ChatIntent::FollowUp => "followup",
-        ChatIntent::Describe { .. } => "describe",
-        ChatIntent::SearchKeyword { .. } => "search_keyword",
-        ChatIntent::General => "general",
-    };
+    let intent_str = intent_name(&intent);
 
     match intent {
         ChatIntent::Ranking { n, ref title_terms } => {

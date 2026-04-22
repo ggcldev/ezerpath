@@ -91,6 +91,51 @@ pub(crate) async fn semantic_search_fallback(
     db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())
 }
 
+pub(crate) struct ChatTurn {
+    pub(crate) conversation_id: i64,
+    pub(crate) now: String,
+    pub(crate) history: Vec<AiMessage>,
+    pub(crate) recent: Vec<AiMessage>,
+}
+
+pub(crate) fn begin_chat_turn(
+    db: &Database,
+    conversation_id: Option<i64>,
+    message: &str,
+    limit_history: usize,
+) -> Result<ChatTurn, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let suggested_title = chat_title_from_query(message);
+    let conversation_id = match conversation_id {
+        Some(id) => id,
+        None => db
+            .create_ai_conversation(Some(&suggested_title), &now)
+            .map_err(|e| e.to_string())?
+            .id,
+    };
+
+    db.maybe_set_ai_conversation_title(conversation_id, &suggested_title)
+        .map_err(|e| e.to_string())?;
+    db.append_ai_message(conversation_id, "user", message, "{}", &[], &now)
+        .map_err(|e| e.to_string())?;
+
+    let history = db
+        .get_ai_messages(conversation_id)
+        .map_err(|e| e.to_string())?;
+    let recent = if history.len() > limit_history {
+        history[(history.len() - limit_history)..].to_vec()
+    } else {
+        history.clone()
+    };
+
+    Ok(ChatTurn {
+        conversation_id,
+        now,
+        history,
+        recent,
+    })
+}
+
 pub(crate) fn chat_title_from_query(message: &str) -> String {
     let normalized = message
         .split_whitespace()
@@ -616,6 +661,16 @@ pub(crate) enum ChatIntent {
     Describe { n: usize },
     SearchKeyword { query: String },
     General,
+}
+
+pub(crate) fn intent_name(intent: &ChatIntent) -> &'static str {
+    match intent {
+        ChatIntent::Ranking { .. } => "ranking",
+        ChatIntent::FollowUp => "followup",
+        ChatIntent::Describe { .. } => "describe",
+        ChatIntent::SearchKeyword { .. } => "search_keyword",
+        ChatIntent::General => "general",
+    }
 }
 
 pub(crate) fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
