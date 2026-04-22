@@ -213,4 +213,124 @@ describe("EzerView", () => {
     expect(openAllowlistedHttpsUrlMock).toHaveBeenCalledWith("https://www.onlinejobs.ph/jobseekers/job/9");
     expect(toastErrorMock).not.toHaveBeenCalled();
   });
+
+  it("renders assistant error replies immediately after send", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "ai_list_conversations":
+          return [];
+        case "ai_chat":
+          return {
+            conversation_id: 23,
+            reply: "Ollama request timed out before completion.",
+            cards: null,
+            error: {
+              code: "MODEL_ERROR",
+              message: "error sending request for url (http://127.0.0.1:11434/api/chat)",
+            },
+          };
+        case "ai_get_conversation":
+          return [
+            {
+              id: 81,
+              conversation_id: 23,
+              role: "user",
+              content: "Do you able to access the job scan history",
+              created_at: "2026-04-22T17:54:44.193842+00:00",
+              meta_json: "{}",
+            },
+            {
+              id: 82,
+              conversation_id: 23,
+              role: "assistant",
+              content: "Ollama request timed out before completion.",
+              created_at: "2026-04-22T17:54:44.193842+00:00",
+              meta_json: JSON.stringify({
+                error_code: "MODEL_ERROR",
+                provider: "local",
+                scope: "ollama_unreachable",
+              }),
+            },
+          ];
+        default:
+          return null;
+      }
+    });
+
+    const { default: EzerView } = await import("./EzerView");
+    dispose = render(() => <EzerView />, container);
+
+    await flush();
+
+    const textarea = container.querySelector("textarea");
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      throw new Error("expected textarea");
+    }
+    textarea.value = "Do you able to access the job scan history";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    click(Array.from(container.querySelectorAll("button")).find((el) => el.textContent?.includes("Send")) ?? null);
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("Ollama request timed out before completion.");
+    expect(container.textContent).toContain("Model error");
+  });
+
+  it("renders assistant replies after send in a fresh chat", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      switch (command) {
+        case "ai_list_conversations":
+          return [];
+        case "ai_chat":
+          return {
+            conversation_id: 24,
+            reply: "I'm Ezer, and I can access the current job scan history in this app.",
+            cards: null,
+            error: null,
+          };
+        case "ai_get_conversation":
+          return [
+            {
+              id: 83,
+              conversation_id: 24,
+              role: "user",
+              content: "Do you able to access the job scan history",
+              created_at: "2026-04-22T18:00:51.106380+00:00",
+              meta_json: "{}",
+            },
+            {
+              id: 84,
+              conversation_id: 24,
+              role: "assistant",
+              content: "I'm Ezer, and I can access the current job scan history in this app.",
+              created_at: "2026-04-22T18:00:51.106380+00:00",
+              meta_json: "{}",
+            },
+          ];
+        default:
+          return null;
+      }
+    });
+
+    const { default: EzerView } = await import("./EzerView");
+    dispose = render(() => <EzerView />, container);
+
+    await flush();
+
+    const textarea = container.querySelector("textarea");
+    if (!(textarea instanceof HTMLTextAreaElement)) {
+      throw new Error("expected textarea");
+    }
+    textarea.value = "Do you able to access the job scan history";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    click(Array.from(container.querySelectorAll("button")).find((el) => el.textContent?.includes("Send")) ?? null);
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("I'm Ezer, and I can access the current job scan history in this app.");
+  });
 });

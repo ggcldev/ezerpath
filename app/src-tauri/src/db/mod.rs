@@ -48,8 +48,11 @@ pub struct ScanRun {
     pub id: i64,
     pub started_at: String,
     pub keywords: String,
+    pub status: String,
+    pub finished_at: Option<String>,
     pub total_found: i64,
     pub total_new: i64,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -701,15 +704,20 @@ impl Database {
     pub fn get_runs(&self) -> Result<Vec<ScanRun>, rusqlite::Error> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT id, started_at, keywords, total_found, total_new FROM runs ORDER BY started_at DESC"
+            "SELECT id, started_at, keywords, status, finished_at, total_found, total_new, error_message
+             FROM runs
+             ORDER BY started_at DESC"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ScanRun {
                 id: row.get(0)?,
                 started_at: row.get(1)?,
                 keywords: row.get(2)?,
-                total_found: row.get(3)?,
-                total_new: row.get(4)?,
+                status: row.get(3)?,
+                finished_at: row.get(4)?,
+                total_found: row.get(5)?,
+                total_new: row.get(6)?,
+                error_message: row.get(7)?,
             })
         })?;
         let mut runs = Vec::new();

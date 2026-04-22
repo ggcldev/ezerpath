@@ -7,8 +7,8 @@ use crate::crawler::CrawlStats;
 use crate::services;
 use crate::services::ai_chat_service::{
     begin_chat_turn, classify_intent, handle_describe_intent, handle_followup_intent,
-    handle_general_chat_fallback, handle_ranking_intent, handle_search_keyword_intent, intent_name,
-    is_app_scope_query, is_prompt_injection_attempt, out_of_scope_reply,
+    format_scan_history_reply, handle_general_chat_fallback, handle_ranking_intent,
+    handle_search_keyword_intent, intent_name, is_app_scope_query, is_prompt_injection_attempt, out_of_scope_reply,
     persist_blocked_chat_reply, ChatIntent,
 };
 use crate::AppState;
@@ -465,6 +465,37 @@ pub(crate) async fn ai_chat(
                 query,
             )
             .await;
+        }
+        ChatIntent::ScanHistory => {
+            let runs = state.db.get_runs().map_err(|e| e.to_string())?;
+            let reply = format_scan_history_reply(&message, &runs);
+            let latency = started.elapsed().as_millis() as i64;
+            let _ = state.db.log_ai_run(&crate::db::AiRunLog {
+                task_type: "chat",
+                latency_ms: latency,
+                status: "success_local",
+                created_at: &now,
+                intent: Some(intent_str),
+                route: Some("scan_history_local"),
+                ..Default::default()
+            });
+            state
+                .db
+                .append_ai_message(
+                    convo_id,
+                    "assistant",
+                    &reply,
+                    r#"{"provider":"local","scope":"scan_history"}"#,
+                    &[],
+                    &now,
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(AiChatResponse {
+                conversation_id: convo_id,
+                reply,
+                cards: None,
+                error: None,
+            });
         }
         ChatIntent::General => {}
     }

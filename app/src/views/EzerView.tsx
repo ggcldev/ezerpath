@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Bot, MessageSquarePlus, SendHorizontal, Sparkles, Trash2 } from "lucide-solid";
@@ -53,39 +53,6 @@ function prettyDate(raw: string): string {
   });
 }
 
-function TypewriterText(props: {
-  text: string;
-  active: boolean;
-  onDone?: () => void;
-}) {
-  const [display, setDisplay] = createSignal(props.active ? "" : props.text);
-
-  createEffect(() => {
-    if (!props.active) {
-      setDisplay(props.text);
-      return;
-    }
-
-    setDisplay("");
-    let index = 0;
-    const total = props.text.length;
-    const timer = window.setInterval(() => {
-      if (index >= total) {
-        window.clearInterval(timer);
-        props.onDone?.();
-        return;
-      }
-      const step = total > 900 ? 6 : total > 500 ? 5 : total > 220 ? 3 : 2;
-      index = Math.min(index + step, total);
-      setDisplay(props.text.slice(0, index));
-    }, 12);
-
-    onCleanup(() => window.clearInterval(timer));
-  });
-
-  return <p class="text-[14px] leading-7 text-mk-text whitespace-pre-wrap break-words">{display()}</p>;
-}
-
 export default function EzerView() {
   const [conversations, setConversations] = createSignal<AiConversation[]>([]);
   const [messages, setMessages] = createSignal<AiMessage[]>([]);
@@ -95,32 +62,11 @@ export default function EzerView() {
   const [localError, setLocalError] = createSignal("");
   const [confirmDialog, setConfirmDialog] = createSignal<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = createSignal(false);
-  const [typingMessageId, setTypingMessageId] = createSignal<number | null>(null);
-  const [typingDone, setTypingDone] = createSignal(true);
 
   let viewEl!: HTMLDivElement;
   let messagesEl!: HTMLDivElement;
   let textareaEl!: HTMLTextAreaElement;
   let latestConversationLoadToken = 0;
-
-  const animateMessageEnter = (el: HTMLElement, role: AiMessage["role"]) => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const fromY = role === "user" ? 8 : 10;
-    const duration = role === "user" ? 0.2 : 0.24;
-    const delay = role === "assistant" ? 0.04 : 0;
-    el.animate(
-      [
-        { opacity: 0, transform: `translateY(${fromY}px)` },
-        { opacity: 1, transform: "translateY(0px)" },
-      ],
-      {
-        duration: duration * 1000,
-        delay: delay * 1000,
-        easing: "cubic-bezier(0.2, 0.9, 0.25, 1)",
-        fill: "both",
-      }
-    );
-  };
 
   const parseMeta = (raw: string): AiMessageMeta => {
     if (!raw) return {};
@@ -175,8 +121,6 @@ export default function EzerView() {
     setMessages([]);
     setDraft("");
     setLocalError("");
-    setTypingMessageId(null);
-    setTypingDone(true);
     queueMicrotask(() => textareaEl?.focus());
   };
 
@@ -187,8 +131,6 @@ export default function EzerView() {
         latestConversationLoadToken += 1;
         setSelectedConversationId(null);
         setMessages([]);
-        setTypingMessageId(null);
-        setTypingDone(true);
       }
       await loadConversations();
       toast.success("Chat deleted.");
@@ -204,8 +146,6 @@ export default function EzerView() {
       latestConversationLoadToken += 1;
       setSelectedConversationId(null);
       setMessages([]);
-      setTypingMessageId(null);
-      setTypingDone(true);
       await loadConversations();
       toast.success("All Ezer chat history cleared.");
     } catch (e: any) {
@@ -272,22 +212,12 @@ export default function EzerView() {
         filters: null,
       });
       setSelectedConversationId(response.conversation_id);
-      const [, latestMessages] = await Promise.all([loadConversations(), loadMessages(response.conversation_id)]);
-      const latestAssistant = [...latestMessages].reverse().find((m) => m.role === "assistant");
-      if (latestAssistant) {
-        setTypingMessageId(latestAssistant.id);
-        setTypingDone(false);
-      } else {
-        setTypingMessageId(null);
-        setTypingDone(true);
-      }
+      await Promise.all([loadConversations(), loadMessages(response.conversation_id)]);
       queueMicrotask(() => textareaEl?.focus());
     } catch (e: any) {
       setMessages((prev) => prev.filter((m) => m.id !== tempMessageId));
       setDraft(text);
       setLocalError(String(e));
-      setTypingMessageId(null);
-      setTypingDone(true);
     } finally {
       setSending(false);
     }
@@ -356,8 +286,6 @@ export default function EzerView() {
                   onClick={async () => {
                     setSelectedConversationId(c.id);
                     await loadMessages(c.id);
-                    setTypingMessageId(null);
-                    setTypingDone(true);
                   }}
                 >
                   <div class="flex items-start justify-between gap-2">
@@ -442,7 +370,6 @@ export default function EzerView() {
               <For each={messages()}>
                 {(m) => (
                   <div
-                    ref={(el) => animateMessageEnter(el, m.role)}
                     class={`max-w-[min(52%,30rem)] rounded-xl px-3 py-2 ${
                       m.role === "user"
                         ? "ml-auto bg-mk-green-dim border border-mk-green-dim"
@@ -452,23 +379,11 @@ export default function EzerView() {
                     <p class="text-[10px] font-semibold text-mk-tertiary mb-0.5">
                       {m.role === "user" ? "You" : m.role === "assistant" ? "Ezer" : "System"}
                     </p>
-                    <Show
-                      when={m.role === "assistant" && typingMessageId() === m.id && !typingDone()}
-                      fallback={<p class="text-[13px] leading-[1.45] text-mk-text whitespace-pre-wrap break-words">{m.content}</p>}
-                    >
-                      <TypewriterText
-                        text={m.content}
-                        active
-                        onDone={() => {
-                          if (typingMessageId() === m.id) setTypingDone(true);
-                        }}
-                      />
-                    </Show>
+                    <p class="text-[13px] leading-[1.45] text-mk-text whitespace-pre-wrap break-words">{m.content}</p>
                     <Show
                       when={
                         m.role === "assistant" &&
-                        (parseMeta(m.meta_json).cards?.length || 0) > 0 &&
-                        !(typingMessageId() === m.id && !typingDone())
+                        (parseMeta(m.meta_json).cards?.length || 0) > 0
                       }
                     >
                       <div class="mt-3 space-y-2">
@@ -502,8 +417,7 @@ export default function EzerView() {
                     <Show
                       when={
                         m.role === "assistant" &&
-                        parseMeta(m.meta_json).error_code &&
-                        !(typingMessageId() === m.id && !typingDone())
+                        parseMeta(m.meta_json).error_code
                       }
                     >
                       <div class="mt-2 inline-flex items-center gap-1.5 rounded-full border border-mk-separator bg-mk-grouped-bg/60 px-2 py-0.5 text-[11px] text-mk-tertiary">

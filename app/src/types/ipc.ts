@@ -42,8 +42,11 @@ export interface ScanRun {
   id: number;
   started_at: string;
   keywords: string;
+  status: string;
+  finished_at: string | null;
   total_found: number;
   total_new: number;
+  error_message: string | null;
 }
 
 export interface CrawlStats {

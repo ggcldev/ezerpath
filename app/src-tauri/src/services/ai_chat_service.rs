@@ -7,6 +7,7 @@ use crate::ai::ranking::rank_embeddings_against_query;
 use crate::ai::sentence_service::SentenceServiceClient;
 use crate::ai::{AiChatError, AiChatResponse, AiJobCard, AiMessage, AiRuntimeConfig};
 use crate::db::{normalized_pay_usd_monthly, parse_pay, AiRunLog, Database, Job, ScanRun};
+use chrono::{DateTime, Local};
 use serde::Deserialize;
 use std::cmp::Ordering;
 
@@ -428,6 +429,94 @@ pub(crate) async fn handle_describe_intent(
     }
 
     Ok(None)
+}
+
+pub(crate) fn format_scan_history_reply(message: &str, runs: &[ScanRun]) -> String {
+    if runs.is_empty() {
+        return "No scan history is available yet. Run a scan first, then ask about the latest scan or scan history.".to_string();
+    }
+
+    let lower = message.to_lowercase();
+    let wants_latest = [
+        "latest scan",
+        "last scan",
+        "most recent scan",
+        "job scan history",
+        "scan history",
+    ]
+    .iter()
+    .any(|term| lower.contains(term));
+
+    if wants_latest {
+        let run = &runs[0];
+        let started = format_user_facing_datetime(&run.started_at);
+        let finished = run
+            .finished_at
+            .as_deref()
+            .map(format_user_facing_datetime)
+            .unwrap_or_else(|| "still running".to_string());
+        let keywords = if run.keywords.trim().is_empty() {
+            "No keywords recorded"
+        } else {
+            run.keywords.as_str()
+        };
+        let status_line = match run.status.as_str() {
+            "succeeded" => format!(
+                "Your latest scan started on {} and finished on {}. It completed successfully and found {} jobs, with {} new.",
+                started, finished, run.total_found, run.total_new
+            ),
+            "failed" => format!(
+                "Your latest scan started on {} and finished on {}. It failed after finding {} jobs, with {} new.",
+                started, finished, run.total_found, run.total_new
+            ),
+            other => format!(
+                "Your latest scan started on {} and finished on {}. Its current status is {}. It found {} jobs, with {} new.",
+                started, finished, other, run.total_found, run.total_new
+            ),
+        };
+
+        let mut lines = vec![status_line, format!("Keywords used: {}.", keywords)];
+        if let Some(error) = run.error_message.as_deref().filter(|e| !e.trim().is_empty()) {
+            lines.push(format!("Recorded error: {}.", error));
+        }
+        return lines.join("\n");
+    }
+
+    let take = runs.len().min(3);
+    let mut lines = vec![format!("Here are your {} most recent scans:", take)];
+    for (index, run) in runs.iter().take(take).enumerate() {
+        let finished = run
+            .finished_at
+            .as_deref()
+            .map(format_user_facing_datetime)
+            .unwrap_or_else(|| "still running".to_string());
+        let keywords = if run.keywords.trim().is_empty() {
+            "No keywords recorded"
+        } else {
+            run.keywords.as_str()
+        };
+        lines.push(format!(
+            "{}. {}: {} status, {} found, {} new, keywords {}. Finished {}.",
+            index + 1,
+            format_user_facing_datetime(&run.started_at),
+            run.status,
+            run.total_found,
+            run.total_new,
+            keywords,
+            finished
+        ));
+    }
+    lines.join("\n")
+}
+
+fn format_user_facing_datetime(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%B %-d, %Y at %-I:%M %p")
+                .to_string()
+        })
+        .unwrap_or_else(|_| raw.to_string())
 }
 
 pub(crate) async fn handle_ranking_intent(
@@ -1532,6 +1621,7 @@ pub(crate) enum ChatIntent {
     FollowUp,
     Describe { n: usize },
     SearchKeyword { query: String },
+    ScanHistory,
     General,
 }
 
@@ -1541,12 +1631,27 @@ pub(crate) fn intent_name(intent: &ChatIntent) -> &'static str {
         ChatIntent::FollowUp => "followup",
         ChatIntent::Describe { .. } => "describe",
         ChatIntent::SearchKeyword { .. } => "search_keyword",
+        ChatIntent::ScanHistory => "scan_history",
         ChatIntent::General => "general",
     }
 }
 
 pub(crate) fn classify_intent(message: &str, history: &[AiMessage]) -> ChatIntent {
     let lower = message.to_lowercase();
+
+    let scan_history_terms = [
+        "scan history",
+        "job scan history",
+        "latest scan",
+        "last scan",
+        "most recent scan",
+        "scan run",
+        "latest run",
+        "last run",
+    ];
+    if scan_history_terms.iter().any(|term| lower.contains(term)) {
+        return ChatIntent::ScanHistory;
+    }
 
     if is_explicit_top_jobs_request(message) {
         let n = extract_top_n(message, 3);
@@ -1609,6 +1714,48 @@ pub(crate) fn classify_intent(message: &str, history: &[AiMessage]) -> ChatInten
     }
 
     ChatIntent::General
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_intent, format_scan_history_reply, ChatIntent};
+    use crate::ai::AiMessage;
+    use crate::db::ScanRun;
+
+    #[test]
+    fn classify_intent_detects_scan_history_queries() {
+        let intent = classify_intent("Do you able to access the job scan history", &[]);
+        assert!(matches!(intent, ChatIntent::ScanHistory));
+    }
+
+    #[test]
+    fn format_scan_history_reply_uses_latest_run_details() {
+        let reply = format_scan_history_reply(
+            "what happened in the latest scan",
+            &[ScanRun {
+                id: 36,
+                started_at: "2026-04-22T12:41:01.525903+00:00".to_string(),
+                keywords: "local seo, seo specialist".to_string(),
+                status: "succeeded".to_string(),
+                finished_at: Some("2026-04-22T12:41:14.744156+00:00".to_string()),
+                total_found: 29,
+                total_new: 22,
+                error_message: None,
+            }],
+        );
+
+        assert!(reply.contains("Your latest scan started on April 22, 2026 at 8:41 PM"));
+        assert!(reply.contains("It completed successfully and found 29 jobs, with 22 new."));
+        assert!(reply.contains("Keywords used: local seo, seo specialist."));
+        assert!(reply.contains("April 22, 2026 at 8:41 PM"));
+    }
+
+    #[test]
+    fn classify_intent_keeps_existing_general_queries_general() {
+        let history: Vec<AiMessage> = Vec::new();
+        let intent = classify_intent("summarize these jobs", &history);
+        assert!(matches!(intent, ChatIntent::General | ChatIntent::Describe { .. } | ChatIntent::FollowUp));
+    }
 }
 
 fn try_search_keyword(lower: &str) -> Option<String> {
