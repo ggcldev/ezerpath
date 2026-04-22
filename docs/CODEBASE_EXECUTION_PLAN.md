@@ -404,7 +404,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 - [ ] Create service modules:
   - [x] `services/scan_service.rs`
   - `services/ai_chat_service.rs`
-  - `services/runtime_service.rs`
+  - [x] `services/runtime_service.rs`
 - [x] Retire sidecar-specific runtime code before extracting the runtime service:
   - remove HTTP `/embed` and `/extract-text` fallbacks from `sentence_service.rs`
   - remove scrapling HTTP fallbacks from `crawler/mod.rs`
@@ -429,7 +429,7 @@ Ezer currently opens looser URLs than the rest of the app and can race conversat
 - `refactor(runtime): retire python sidecar fallbacks`
 - `refactor(backend): extract scan service from lib.rs` (`DONE`)
 - `refactor(backend): extract ai chat service from lib.rs`
-- `refactor(backend): extract runtime startup service from lib.rs`
+- `refactor(backend): extract runtime startup service from lib.rs` (`DONE`)
 
 ### P3.2 - Replace broad frontend invalidation with explicit resources
 

@@ -9,7 +9,7 @@ use ai::prompts::{
     followup_resolution_schema, job_descriptions_response_schema, json_mode_system_suffix,
     system_prompt_for_job_chat, top_jobs_response_schema,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use ai::ranking::{cosine_similarity, rank_embeddings_against_query};
 use ai::{
     AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiJobCard, AiMessage,
@@ -843,16 +843,6 @@ struct AppState {
     sentence_service: SentenceServiceClient,
     crawl_lock: Mutex<()>,
     webview_scraper: crawler::webview_scraper::WebviewScraperState,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct BackendDiagnostics {
-    state: String,
-    ready: bool,
-    embedding_model: String,
-    native_embedder_ready: bool,
-    embeddings_cache_dir: String,
-    runtime_mode: String,
 }
 
 #[tauri::command]
@@ -2166,16 +2156,8 @@ async fn ai_start_scan_with_keywords(
 }
 
 #[tauri::command]
-fn backend_diagnostics(state: State<'_, AppState>) -> BackendDiagnostics {
-    let native_embedder_ready = ai::native_embedder::is_ready();
-    BackendDiagnostics {
-        state: if native_embedder_ready { "ready".to_string() } else { "available".to_string() },
-        ready: true,
-        embedding_model: ai::SUPPORTED_EMBEDDING_MODEL.to_string(),
-        native_embedder_ready,
-        embeddings_cache_dir: state.sentence_service.cache_dir().to_string_lossy().to_string(),
-        runtime_mode: "native".to_string(),
-    }
+fn backend_diagnostics(state: State<'_, AppState>) -> services::runtime_service::BackendDiagnostics {
+    services::runtime_service::backend_diagnostics(&state.sentence_service)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
