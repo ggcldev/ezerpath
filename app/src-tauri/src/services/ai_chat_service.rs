@@ -1,7 +1,7 @@
 use crate::ai::prompts::system_prompt_for_job_chat;
 use crate::ai::ranking::rank_embeddings_against_query;
 use crate::ai::sentence_service::SentenceServiceClient;
-use crate::ai::{AiChatResponse, AiJobCard, AiMessage, AiRuntimeConfig};
+use crate::ai::{AiChatError, AiChatResponse, AiJobCard, AiMessage, AiRuntimeConfig};
 use crate::db::{parse_pay, AiRunLog, Database, Job, ScanRun};
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -172,6 +172,105 @@ pub(crate) fn persist_blocked_chat_reply(
         reply,
         cards: None,
         error: None,
+    })
+}
+
+pub(crate) async fn handle_search_keyword_intent(
+    db: &Database,
+    sentence_service: &SentenceServiceClient,
+    cfg: &AiRuntimeConfig,
+    conversation_id: i64,
+    now: &str,
+    started: std::time::Instant,
+    retrieval_start: std::time::Instant,
+    intent_name: &str,
+    query: &str,
+) -> Result<AiChatResponse, String> {
+    let fts_results = db.search_jobs_fts(query, 10).map_err(|e| e.to_string())?;
+    let fts_ids: std::collections::HashSet<i64> =
+        fts_results.iter().filter_map(|j| j.id).collect();
+
+    let (results, route_name) = if fts_results.len() >= SEARCH_KEYWORD_FTS_MIN_HITS {
+        (fts_results, "search_keyword_fts")
+    } else {
+        let want = 10usize.saturating_sub(fts_results.len());
+        match semantic_search_fallback(db, sentence_service, cfg, query, &fts_ids, want).await {
+            Ok(extra) if !extra.is_empty() => {
+                let mut merged = fts_results;
+                merged.extend(extra);
+                (merged, "search_keyword_fts_semantic")
+            }
+            _ => (fts_results, "search_keyword_fts"),
+        }
+    };
+
+    if !results.is_empty() {
+        let reply = format_search_keyword_reply(query, &results);
+        let cards = jobs_to_cards(&results);
+        let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
+        let candidate_ids: Vec<i64> = results.iter().filter_map(|j| j.id).collect();
+        let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+        let latency = started.elapsed().as_millis() as i64;
+        let _ = db.log_ai_run(&AiRunLog {
+            task_type: "chat",
+            latency_ms: latency,
+            status: "success_search",
+            created_at: now,
+            intent: Some(intent_name),
+            route: Some(route_name),
+            candidate_job_ids: Some(&candidate_ids),
+            final_job_ids: Some(&linked_ids),
+            retrieval_ms: Some(retrieval_ms),
+            ..Default::default()
+        });
+        db.append_ai_message(
+            conversation_id,
+            "assistant",
+            &reply,
+            &assistant_meta("sql", None, Some(&cards)),
+            &linked_ids,
+            now,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(AiChatResponse {
+            conversation_id,
+            reply,
+            cards: Some(cards),
+            error: None,
+        });
+    }
+
+    let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
+    let latency = started.elapsed().as_millis() as i64;
+    let reply = format!("No jobs matching \"{query}\" were found in the current scan.");
+    let _ = db.log_ai_run(&AiRunLog {
+        task_type: "chat",
+        latency_ms: latency,
+        status: "no_matches",
+        created_at: now,
+        intent: Some(intent_name),
+        route: Some("search_keyword_no_matches"),
+        retrieval_ms: Some(retrieval_ms),
+        ..Default::default()
+    });
+    db.append_ai_message(
+        conversation_id,
+        "assistant",
+        &reply,
+        &assistant_meta_full("sql", None, None, Some("NO_MATCHES")),
+        &[],
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(AiChatResponse {
+        conversation_id,
+        reply,
+        cards: None,
+        error: Some(AiChatError {
+            code: "NO_MATCHES".to_string(),
+            message: format!("No jobs matched '{query}'."),
+        }),
     })
 }
 

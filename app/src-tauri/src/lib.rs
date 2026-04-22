@@ -25,12 +25,11 @@ use services::ai_chat_service::{
     assistant_meta, assistant_meta_full, begin_chat_turn, build_ollama_system_prompt,
     classify_intent, compact_reply_text, compare_jobs_for_ranking, extract_cards_from_reply,
     format_describe_reply, format_followup_describe_reply, format_followup_select_reply,
-    format_ranking_reply, format_search_keyword_reply, get_linked_job_ids, intent_name,
+    format_ranking_reply, get_linked_job_ids, handle_search_keyword_intent, intent_name,
     is_app_scope_query, is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards,
     out_of_scope_reply, persist_blocked_chat_reply, response_violates_app_scope,
-    scoped_jobs_for_message, semantic_search_fallback, short_description, wants_descriptions,
-    ChatIntent, FollowUpResolution, JobDescriptionItem, JobDescriptionsResponse, TopJobsResponse,
-    SEARCH_KEYWORD_FTS_MIN_HITS,
+    scoped_jobs_for_message, short_description, wants_descriptions, ChatIntent,
+    FollowUpResolution, JobDescriptionItem, JobDescriptionsResponse, TopJobsResponse,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -980,92 +979,18 @@ async fn ai_chat(
         }
 
         ChatIntent::SearchKeyword { ref query } => {
-            let fts_results = state.db.search_jobs_fts(query, 10).map_err(|e| e.to_string())?;
-            let fts_ids: std::collections::HashSet<i64> =
-                fts_results.iter().filter_map(|j| j.id).collect();
-
-            let (results, route_name) = if fts_results.len() >= SEARCH_KEYWORD_FTS_MIN_HITS {
-                (fts_results, "search_keyword_fts")
-            } else {
-                // Best-effort: if the embedding service is down or no vectors are
-                // cached, fall back silently to the FTS hits we already have.
-                let want = 10usize.saturating_sub(fts_results.len());
-                match semantic_search_fallback(
-                    state.db.as_ref(),
-                    &state.sentence_service,
-                    &cfg,
-                    query,
-                    &fts_ids,
-                    want,
-                ).await {
-                    Ok(extra) if !extra.is_empty() => {
-                        let mut merged = fts_results;
-                        merged.extend(extra);
-                        (merged, "search_keyword_fts_semantic")
-                    }
-                    _ => (fts_results, "search_keyword_fts"),
-                }
-            };
-
-            if !results.is_empty() {
-                let reply = format_search_keyword_reply(query, &results);
-                let cards = jobs_to_cards(&results);
-                let linked_ids: Vec<i64> = cards.iter().map(|c| c.job_id).collect();
-                let candidate_ids: Vec<i64> = results.iter().filter_map(|j| j.id).collect();
-                let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-                let latency = started.elapsed().as_millis() as i64;
-                let _ = state.db.log_ai_run(&AiRunLog {
-                    task_type: "chat",
-                    latency_ms: latency,
-                    status: "success_search",
-                    created_at: &now,
-                    intent: Some(intent_str),
-                    route: Some(route_name),
-                    candidate_job_ids: Some(&candidate_ids),
-                    final_job_ids: Some(&linked_ids),
-                    retrieval_ms: Some(retrieval_ms),
-                    ..Default::default()
-                });
-                state.db.append_ai_message(
-                    convo_id, "assistant", &reply,
-                    &assistant_meta("sql", None, Some(&cards)),
-                    &linked_ids, &now,
-                ).map_err(|e| e.to_string())?;
-                return Ok(AiChatResponse { conversation_id: convo_id, reply, cards: Some(cards), error: None });
-            }
-
-            // Both FTS and the semantic fallback returned nothing. Short-circuit
-            // with a structured soft error instead of handing a vague "I can't
-            // find anything" to the general Ollama path — the frontend can
-            // render a dedicated empty state and the eval harness can assert
-            // on the code rather than prose.
-            let retrieval_ms = retrieval_start.elapsed().as_millis() as i64;
-            let latency = started.elapsed().as_millis() as i64;
-            let reply = format!("No jobs matching \"{query}\" were found in the current scan.");
-            let _ = state.db.log_ai_run(&AiRunLog {
-                task_type: "chat",
-                latency_ms: latency,
-                status: "no_matches",
-                created_at: &now,
-                intent: Some(intent_str),
-                route: Some("search_keyword_no_matches"),
-                retrieval_ms: Some(retrieval_ms),
-                ..Default::default()
-            });
-            state.db.append_ai_message(
-                convo_id, "assistant", &reply,
-                &assistant_meta_full("sql", None, None, Some("NO_MATCHES")),
-                &[], &now,
-            ).map_err(|e| e.to_string())?;
-            return Ok(AiChatResponse {
-                conversation_id: convo_id,
-                reply,
-                cards: None,
-                error: Some(AiChatError {
-                    code: "NO_MATCHES".to_string(),
-                    message: format!("No jobs matched '{query}'."),
-                }),
-            });
+            return handle_search_keyword_intent(
+                state.db.as_ref(),
+                &state.sentence_service,
+                &cfg,
+                convo_id,
+                &now,
+                started,
+                retrieval_start,
+                intent_str,
+                query,
+            )
+            .await;
         }
 
         ChatIntent::General => {}
