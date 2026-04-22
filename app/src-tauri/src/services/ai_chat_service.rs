@@ -1,7 +1,95 @@
 use crate::ai::prompts::system_prompt_for_job_chat;
-use crate::ai::{AiJobCard, AiMessage};
-use crate::db::{parse_pay, Job, ScanRun};
+use crate::ai::ranking::rank_embeddings_against_query;
+use crate::ai::sentence_service::SentenceServiceClient;
+use crate::ai::{AiJobCard, AiMessage, AiRuntimeConfig};
+use crate::db::{parse_pay, Database, Job, ScanRun};
+use serde::Deserialize;
 use std::cmp::Ordering;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct TopJobsResponse {
+    #[allow(dead_code)]
+    pub(crate) answer_type: String,
+    pub(crate) jobs: Vec<TopJobItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub(crate) struct TopJobItem {
+    pub(crate) job_id: i64,
+    pub(crate) title: String,
+    pub(crate) company: String,
+    pub(crate) pay_text: String,
+    pub(crate) summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct JobDescriptionsResponse {
+    #[allow(dead_code)]
+    pub(crate) answer_type: String,
+    pub(crate) jobs: Vec<JobDescriptionItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct JobDescriptionItem {
+    pub(crate) job_id: i64,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FollowUpResolution {
+    #[allow(dead_code)]
+    pub(crate) answer_type: String,
+    pub(crate) target_job_ids: Vec<i64>,
+    pub(crate) explanation: String,
+}
+
+/// Minimum number of FTS hits before keyword search is considered complete.
+pub(crate) const SEARCH_KEYWORD_FTS_MIN_HITS: usize = 3;
+
+/// Discard semantic matches whose cosine similarity falls below this floor.
+const SEMANTIC_FALLBACK_SIM_FLOOR: f32 = 0.30;
+
+pub(crate) async fn semantic_search_fallback(
+    db: &Database,
+    sentence_service: &SentenceServiceClient,
+    cfg: &AiRuntimeConfig,
+    query: &str,
+    exclude: &std::collections::HashSet<i64>,
+    limit: usize,
+) -> Result<Vec<Job>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let embedding_model = cfg.effective_embedding_model();
+    let rows = db
+        .list_job_embeddings(embedding_model)
+        .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut vectors = sentence_service
+        .embed_texts(cfg, vec![query.to_string()])
+        .await?;
+    let query_vec = vectors
+        .pop()
+        .ok_or_else(|| "empty query embedding".to_string())?;
+
+    let candidates = rows.into_iter().filter_map(|row| {
+        let job_vec: Vec<f32> = serde_json::from_str(&row.vector_json).ok()?;
+        Some((row.job_id, job_vec))
+    });
+    let ids = rank_embeddings_against_query(
+        &query_vec,
+        candidates,
+        exclude,
+        SEMANTIC_FALLBACK_SIM_FLOOR,
+        limit,
+    );
+    db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())
+}
 
 pub(crate) fn chat_title_from_query(message: &str) -> String {
     let normalized = message

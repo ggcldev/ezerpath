@@ -9,8 +9,7 @@ use ai::prompts::{
     followup_resolution_schema, job_descriptions_response_schema, json_mode_system_suffix,
     top_jobs_response_schema,
 };
-use serde::Deserialize;
-use ai::ranking::{cosine_similarity, rank_embeddings_against_query};
+use ai::ranking::cosine_similarity;
 use ai::{
     AiChatError, AiChatFilters, AiChatResponse, AiConversation, AiHealth, AiMessage,
     AiRuntimeConfig, EmbeddingHealth, EmbeddingIndexStatus, KeywordSuggestion, MatchJobResult,
@@ -28,110 +27,15 @@ use services::ai_chat_service::{
     format_describe_reply, format_followup_describe_reply, format_followup_select_reply,
     format_ranking_reply, format_search_keyword_reply, get_linked_job_ids, is_app_scope_query,
     is_prompt_injection_attempt, job_pay_score_usd_monthly, jobs_to_cards, out_of_scope_reply,
-    response_violates_app_scope, scoped_jobs_for_message, short_description, wants_descriptions,
-    ChatIntent,
+    response_violates_app_scope, scoped_jobs_for_message, semantic_search_fallback,
+    short_description, wants_descriptions, ChatIntent, FollowUpResolution, JobDescriptionItem,
+    JobDescriptionsResponse, TopJobsResponse, SEARCH_KEYWORD_FTS_MIN_HITS,
 };
 use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
-
-// ── JSON-mode response shapes (phase #4) ───────────────────────────────────
-//
-// These match the schemas in ai/prompts.rs and are deserialized from
-// chat_json output. Kept private — only the routing code in ai_chat reads
-// them. Field changes must be mirrored in the schema constants.
-
-#[derive(Debug, Deserialize)]
-struct TopJobsResponse {
-    #[allow(dead_code)]
-    answer_type: String,
-    jobs: Vec<TopJobItem>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct TopJobItem {
-    // Only `job_id` is consumed downstream — the rest are required by the
-    // schema (so the model always emits them) and kept here for forward
-    // compatibility / debugging via Debug.
-    job_id: i64,
-    title: String,
-    company: String,
-    pay_text: String,
-    summary: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct JobDescriptionsResponse {
-    #[allow(dead_code)]
-    answer_type: String,
-    jobs: Vec<JobDescriptionItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct JobDescriptionItem {
-    job_id: i64,
-    description: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct FollowUpResolution {
-    #[allow(dead_code)]
-    answer_type: String,
-    target_job_ids: Vec<i64>,
-    explanation: String,
-}
-
-/// Minimum number of FTS hits before we consider the keyword search "enough".
-/// Below this, we fall through to a semantic-similarity pass using cached job
-/// embeddings to pick up conceptually-related postings the tokenizer missed.
-const SEARCH_KEYWORD_FTS_MIN_HITS: usize = 3;
-
-/// Discard semantic matches whose cosine similarity falls below this floor.
-/// Cosine on the sentence-transformer models we use produces roughly [-0.1, 1.0]
-/// for job text; 0.30 empirically separates "related" from "unrelated noise".
-const SEMANTIC_FALLBACK_SIM_FLOOR: f32 = 0.30;
-
-async fn semantic_search_fallback(
-    state: &AppState,
-    cfg: &AiRuntimeConfig,
-    query: &str,
-    exclude: &std::collections::HashSet<i64>,
-    limit: usize,
-) -> Result<Vec<Job>, String> {
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    // Native embeddings currently support one canonical model namespace only.
-    let embedding_model = cfg.effective_embedding_model();
-    let rows = state
-        .db
-        .list_job_embeddings(embedding_model)
-        .map_err(|e| e.to_string())?;
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut vectors = state
-        .sentence_service
-        .embed_texts(cfg, vec![query.to_string()])
-        .await?;
-    let query_vec = vectors.pop().ok_or_else(|| "empty query embedding".to_string())?;
-
-    let candidates = rows.into_iter().filter_map(|row| {
-        let job_vec: Vec<f32> = serde_json::from_str(&row.vector_json).ok()?;
-        Some((row.job_id, job_vec))
-    });
-    let ids = rank_embeddings_against_query(
-        &query_vec,
-        candidates,
-        exclude,
-        SEMANTIC_FALLBACK_SIM_FLOOR,
-        limit,
-    );
-    state.db.get_jobs_by_ids(&ids).map_err(|e| e.to_string())
-}
 
 struct AppState {
     db: Arc<Database>,
@@ -1143,7 +1047,14 @@ async fn ai_chat(
                 // Best-effort: if the embedding service is down or no vectors are
                 // cached, fall back silently to the FTS hits we already have.
                 let want = 10usize.saturating_sub(fts_results.len());
-                match semantic_search_fallback(state.inner(), &cfg, query, &fts_ids, want).await {
+                match semantic_search_fallback(
+                    state.db.as_ref(),
+                    &state.sentence_service,
+                    &cfg,
+                    query,
+                    &fts_ids,
+                    want,
+                ).await {
                     Ok(extra) if !extra.is_empty() => {
                         let mut merged = fts_results;
                         merged.extend(extra);
